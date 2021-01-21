@@ -90,6 +90,31 @@ def unpack_sdf_samples(filename, subsample=None):
     return samples
 
 
+def generate_cube(samples):
+    # TODO load cube and box size from spec.json
+    cube_size = 50
+    box_size = 2
+
+    # Get all xyz values from extracted samples
+    xyz = samples[:, 0:3]
+    
+    # Create bins for cube
+    bins = np.linspace(-box_size, box_size, cube_size)
+    
+    # Divide x, y, z into bins along each dimension
+    x_values = np.digitize(xyz[:,0], bins)
+    y_values = np.digitize(xyz[:,1], bins)
+    z_values = np.digitize(xyz[:,2], bins)
+
+    cube = np.empty([cube_size,cube_size,cube_size])
+  
+    # Each sample is assigned to its cube cell
+    for i in range(len(xyz)):
+        cube[x_values[i],y_values[i],z_values[i]] = xyz[i]
+
+    return cube
+
+
 def unpack_sdf_samples_from_ram(data, subsample=None):
     if subsample is None:
         return data
@@ -164,8 +189,8 @@ class SDFSamples(torch.utils.data.Dataset):
         )
         if self.load_ram:
             return (
-                unpack_sdf_samples_from_ram(self.loaded_data[idx], self.subsample),
+                generate_cube(unpack_sdf_samples_from_ram(self.loaded_data[idx], self.subsample)),
                 idx,
             )
         else:
-            return unpack_sdf_samples(filename, self.subsample), idx
+            return generate_cube(unpack_sdf_samples(filename, self.subsample)), idx
