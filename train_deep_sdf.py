@@ -10,6 +10,7 @@ import logging
 import math
 import json
 import time
+import numpy as np
 
 import deep_sdf
 import deep_sdf.workspace as ws
@@ -354,6 +355,14 @@ def main_function(experiment_directory, continue_from, batch_split):
         drop_last=True,
     )
 
+    # TODO load voxel_size and min/max values from specs
+    cube_size=50
+    box_size=2
+    sdf_grid_indices = deep_sdf.data.generate_grid_center_indices(cube_size=cube_size, box_size=box_size)
+    # radius is defined as 1.5 times the voxel side length (see DeepLS sec. 4.1)
+    sdf_grid_radius = 1.5*((box_size*2)/cube_size)
+
+
     logging.debug("torch num_threads: {}".format(torch.get_num_threads()))
 
     num_scenes = len(sdf_dataset)
@@ -362,7 +371,10 @@ def main_function(experiment_directory, continue_from, batch_split):
 
     logging.debug(decoder)
 
-    lat_vecs = torch.nn.Embedding(num_scenes, latent_size, max_norm=code_bound)
+    # TODO check if there is something better than Embedding to store codes.
+    # lat_vecs_size is num_scences times the grid (cube_size^3)
+    lat_vec_size = num_scenes * (cube_size * cube_size * cube_size)
+    lat_vecs = torch.nn.Embedding(lat_vec_size, latent_size, max_norm=code_bound)
     torch.nn.init.normal_(
         lat_vecs.weight.data,
         0.0,
@@ -460,7 +472,57 @@ def main_function(experiment_directory, continue_from, batch_split):
         adjust_learning_rate(lr_schedules, optimizer_all, epoch)
 
         for sdf_data, indices in sdf_loader:
+            # sdf_data contains the KDTree of the current scene and all the points in that scene
+            # indices is the index of the npz file -> the scene.
+            sdf_tree, sdf_samples = sdf_data
+            
+            centers_x, centers_y, centers_z = sdf_grid_indices
 
+            outer_sum = 0.0
+            optimizer_all.zero_grad()
+
+            # Iterate through each grid cell
+            for c_x in range(len(centers_x)):
+                for c_y in range(len(centers_y)):
+                    for c_z in range(len(centers_z)):
+                        inner_sum = 0.0
+                        # Get all indices of the samples that are within the L-radius around cell center.
+                        near_sample_indices = sdf_tree.query_radius([[centers_x[c_x], centers_z[c_z], centers_z[c_z]]], r=sdf_grid_radius)
+                        num_sdf_samples = len(near_sample_indices[0])
+                        
+                        # Indexing the flatten lat_vecs array like described here: 
+                        # https://stackoverflow.com/questions/29142417/4d-position-from-1d-index
+                        code = lat_vecs[c_z + (cube_size*c_y) + (cube_size*cube_size*c_x) + (cube_size*cube_size*cube_size*indices)]
+                        for index in near_sample_indices[0]:
+                            # Get groundtruth
+                            sdf_gt = sdf_samples[index, 3].unsqueeze(1)
+                            # prepare decoder input
+                            input = torch.cat([code, sdf_samples[index, :3]], dim=1)
+                            # Get network prediction of current sample
+                            pred_sdf = decoder(input)
+
+                            # f_theta - s_j 
+                            inner_sum += loss_l1(pred_sdf, sdf_gt.cuda()) / num_sdf_samples
+
+                        # right most part of formula (4) in DeepLS ->  + 1/sigma^2 L2(z_i) 
+                        if do_code_regularization:
+                            l2_size_loss = torch.sum(torch.norm(code, dim=1))
+                            reg_loss = (
+                                code_reg_lambda * min(1, epoch / 100) * l2_size_loss
+                            ) / num_sdf_samples
+                            inner_sum = inner_sum + reg_loss.cuda()
+
+                        inner_sum.backward()
+
+                        outer_sum += inner_sum.item()
+            logging.debug("loss = {}".format(outer_sum))
+
+            loss_log.append(outer_sum)
+            optimizer_all.step()
+            
+
+            # DeepSDF Code:
+            """
             # Process the input data
             sdf_data = sdf_data.reshape(-1, 4)
 
@@ -521,6 +583,7 @@ def main_function(experiment_directory, continue_from, batch_split):
                 torch.nn.utils.clip_grad_norm_(decoder.parameters(), grad_clip)
 
             optimizer_all.step()
+            """
 
         end = time.time()
 
@@ -529,6 +592,7 @@ def main_function(experiment_directory, continue_from, batch_split):
 
         lr_log.append([schedule.get_learning_rate(epoch) for schedule in lr_schedules])
 
+        # TODO check what other functions do with lat_vecs and adapt if needed.
         lat_mag_log.append(get_mean_latent_vector_magnitude(lat_vecs))
 
         append_parameter_magnitudes(param_mag_log, decoder)

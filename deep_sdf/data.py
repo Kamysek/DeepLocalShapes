@@ -8,6 +8,7 @@ import os
 import random
 import torch
 import torch.utils.data
+from sklearn.neighbors import KDTree
 
 import deep_sdf.workspace as ws
 
@@ -114,6 +115,27 @@ def generate_cube(samples):
 
     return cube
 
+def generate_grid_center_indices(cube_size=50, box_size=2):
+    # TODO load cube and box size from spec.json
+
+    # Divide space into equally sized subspaces
+    voxels_centers = np.linspace(-box_size, box_size, cube_size)
+
+    # Create grid indices
+    centers_x, centers_y, centers_z = np.meshgrid(voxels_centers, voxels_centers, voxels_centers)
+    return (centers_x, centers_y, centers_z)
+
+def generate_kdtree(samples):
+    # Get all xyz values from extracted samples
+    xyz = samples[:, :3]
+
+    # TODO check leaf_size impact on speed. default = 40
+    # Default metric of kdtree is L2 norm, Paper uses L infinity -> chebyshev
+    tree = KDTree(xyz, metric="chebyshev")
+    
+    # tree must contain only xyz, because otherwise the distance metric is not working as desired.
+    # However we still need the sdf_value therefore we also return the samples.
+    return (tree, samples)
 
 def unpack_sdf_samples_from_ram(data, subsample=None):
     if subsample is None:
@@ -189,8 +211,8 @@ class SDFSamples(torch.utils.data.Dataset):
         )
         if self.load_ram:
             return (
-                generate_cube(unpack_sdf_samples_from_ram(self.loaded_data[idx], self.subsample)),
+                generate_kdtree(unpack_sdf_samples_from_ram(self.loaded_data[idx], self.subsample)),
                 idx,
             )
         else:
-            return generate_cube(unpack_sdf_samples(filename, self.subsample)), idx
+            return generate_kdtree(unpack_sdf_samples(filename, self.subsample)), idx
