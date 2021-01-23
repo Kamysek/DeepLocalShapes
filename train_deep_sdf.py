@@ -497,7 +497,9 @@ def main_function(experiment_directory, continue_from, batch_split):
                             # Get groundtruth
                             sdf_gt = sdf_samples[index, 3].unsqueeze(1)
                             # prepare decoder input
-                            input = torch.cat([code, sdf_samples[index, :3]], dim=1)
+                            # Transform global point into local voxel coordinates -> Paper refereced as T_i(x)
+                            transfromed_sample = sdf_samples[index, :3] - [centers_x[c_x], centers_z[c_z], centers_z[c_z]]
+                            input = torch.cat([code, transfromed_sample], dim=1)
                             # Get network prediction of current sample
                             pred_sdf = decoder(input)
 
