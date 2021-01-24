@@ -480,6 +480,7 @@ def main_function(experiment_directory, continue_from, batch_split):
                 for index in near_sample_indices[0]:
                     # Get ground truth
                     sdf_gt = sdf_samples[index, 3].unsqueeze(1)
+                    sdf_gt = torch.tanh(sdf_gt)
 
                     # Prepare decoder input
                     # Transform global point into local voxel coordinates -> Paper referenced as T_i(x)
