@@ -23,13 +23,13 @@
   "LearningRateSchedule" : [
     {
       "Type" : "Step",
-      "Initial" : 0.0005,
+      "Initial" : 0.01,
       "Interval" : 500,
       "Factor" : 0.5
     },
     {
       "Type" : "Step",
-      "Initial" : 0.001,
+      "Initial" : 0.01,
       "Interval" : 500,
       "Factor" : 0.5
     }],
