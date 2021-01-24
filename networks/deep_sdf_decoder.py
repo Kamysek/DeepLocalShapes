@@ -27,17 +27,18 @@ class Decoder(nn.Module):
 
         dims = [latent_size + 3] + dims + [1]
 
-        self.num_layers = len(dims)
-        self.norm_layers = norm_layers
-        self.latent_in = latent_in
-        self.latent_dropout = latent_dropout
+        self.num_layers = len(dims) #10
+        self.norm_layers = norm_layers # []
+        self.latent_in = latent_in #[]
+        self.latent_dropout = latent_dropout # false
         if self.latent_dropout:
             self.lat_dp = nn.Dropout(0.2)
 
-        self.xyz_in_all = xyz_in_all
-        self.weight_norm = weight_norm
+        self.xyz_in_all = xyz_in_all # false
+        self.weight_norm = weight_norm # false
 
         for layer in range(0, self.num_layers - 1):
+            # latent_in is not used in DeepLS
             if layer + 1 in latent_in:
                 out_dim = dims[layer + 1] - dims[0]
             else:
@@ -45,6 +46,7 @@ class Decoder(nn.Module):
                 if self.xyz_in_all and layer != self.num_layers - 2:
                     out_dim -= 3
 
+            # weight_norm is not used in DeepLS
             if weight_norm and layer in self.norm_layers:
                 setattr(
                     self,
@@ -53,7 +55,8 @@ class Decoder(nn.Module):
                 )
             else:
                 setattr(self, "lin" + str(layer), nn.Linear(dims[layer], out_dim))
-
+            
+            # Batch Norm is not used in DeepLS
             if (
                 (not weight_norm)
                 and self.norm_layers is not None
@@ -61,7 +64,8 @@ class Decoder(nn.Module):
             ):
                 setattr(self, "bn" + str(layer), nn.LayerNorm(out_dim))
 
-        self.use_tanh = use_tanh
+        # tanh in between the layers is not used in DeepLS
+        self.use_tanh = use_tanh # false
         if use_tanh:
             self.tanh = nn.Tanh()
         self.relu = nn.ReLU()
@@ -74,6 +78,7 @@ class Decoder(nn.Module):
     def forward(self, input):
         xyz = input[:, -3:]
 
+        # Dropout not used in DeepLS (Always else)
         if input.shape[1] > 3 and self.latent_dropout:
             latent_vecs = input[:, :-3]
             latent_vecs = F.dropout(latent_vecs, p=0.2, training=self.training)
@@ -83,15 +88,19 @@ class Decoder(nn.Module):
 
         for layer in range(0, self.num_layers - 1):
             lin = getattr(self, "lin" + str(layer))
+            # Not used in DeepLS
             if layer in self.latent_in:
                 x = torch.cat([x, input], 1)
+                # Not used in DeepLS
             elif layer != 0 and self.xyz_in_all:
                 x = torch.cat([x, xyz], 1)
+            
             x = lin(x)
             # last layer Tanh
             if layer == self.num_layers - 2 and self.use_tanh:
                 x = self.tanh(x)
             if layer < self.num_layers - 2:
+                # No batch/weight norm is used in DeepLS
                 if (
                     self.norm_layers is not None
                     and layer in self.norm_layers
@@ -100,9 +109,11 @@ class Decoder(nn.Module):
                     bn = getattr(self, "bn" + str(layer))
                     x = bn(x)
                 x = self.relu(x)
+                # Dropout not used in DeepLS
                 if self.dropout is not None and layer in self.dropout:
                     x = F.dropout(x, p=self.dropout_prob, training=self.training)
 
+        # TODO is this a tanh duplicate?
         if hasattr(self, "th"):
             x = self.th(x)
 
