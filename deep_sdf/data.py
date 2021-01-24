@@ -22,7 +22,7 @@ def get_instance_filenames(data_source, split):
                     dataset, class_name, instance_name + ".npz"
                 )
                 if not os.path.isfile(
-                    os.path.join(data_source, ws.sdf_samples_subdir, instance_filename)
+                        os.path.join(data_source, ws.sdf_samples_subdir, instance_filename)
                 ):
                     # raise RuntimeError(
                     #     'Requested non-existent file "' + instance_filename + "'"
@@ -91,39 +91,14 @@ def unpack_sdf_samples(filename, subsample=None):
     return samples
 
 
-def generate_cube(samples):
-    # TODO load cube and box size from spec.json
-    cube_size = 50
-    box_size = 2
-
-    # Get all xyz values from extracted samples
-    xyz = samples[:, 0:3]
-    
-    # Create bins for cube
-    bins = np.linspace(-box_size, box_size, cube_size)
-    
-    # Divide x, y, z into bins along each dimension
-    x_values = np.digitize(xyz[:,0], bins)
-    y_values = np.digitize(xyz[:,1], bins)
-    z_values = np.digitize(xyz[:,2], bins)
-
-    cube = np.empty([cube_size,cube_size,cube_size])
-  
-    # Each sample is assigned to its cube cell
-    for i in range(len(xyz)):
-        cube[x_values[i],y_values[i],z_values[i]] = xyz[i]
-
-    return cube
-
 def generate_grid_center_indices(cube_size=50, box_size=2):
-    # TODO load cube and box size from spec.json
-
-    # Divide space into equally sized subspaces
-    voxels_centers = np.linspace(-box_size, box_size, cube_size)
+    # Divide space into equally spaced subspaces and calculate center position of subspace
+    voxel_centers = np.linspace(-box_size, box_size, cube_size, endpoint=False)
+    voxel_centers += box_size / cube_size
 
     # Create grid indices
-    centers_x, centers_y, centers_z = np.meshgrid(voxels_centers, voxels_centers, voxels_centers)
-    return (centers_x, centers_y, centers_z)
+    return np.vstack(np.meshgrid(voxel_centers, voxel_centers, voxel_centers)).reshape(3, -1).T
+
 
 def generate_kdtree(samples):
     # Get all xyz values from extracted samples
@@ -132,10 +107,11 @@ def generate_kdtree(samples):
     # TODO check leaf_size impact on speed. default = 40
     # Default metric of kdtree is L2 norm, Paper uses L infinity -> chebyshev
     tree = KDTree(xyz, metric="chebyshev")
-    
-    # tree must contain only xyz, because otherwise the distance metric is not working as desired.
+
+    # Tree must contain only xyz, because otherwise the distance metric is not working as desired.
     # However we still need the sdf_value therefore we also return the samples.
-    return (tree, samples)
+    return tree, samples
+
 
 def unpack_sdf_samples_from_ram(data, subsample=None):
     if subsample is None:
@@ -150,14 +126,14 @@ def unpack_sdf_samples_from_ram(data, subsample=None):
     neg_size = neg_tensor.shape[0]
 
     pos_start_ind = random.randint(0, pos_size - half)
-    sample_pos = pos_tensor[pos_start_ind : (pos_start_ind + half)]
+    sample_pos = pos_tensor[pos_start_ind: (pos_start_ind + half)]
 
     if neg_size <= half:
         random_neg = (torch.rand(half) * neg_tensor.shape[0]).long()
         sample_neg = torch.index_select(neg_tensor, 0, random_neg)
     else:
         neg_start_ind = random.randint(0, neg_size - half)
-        sample_neg = neg_tensor[neg_start_ind : (neg_start_ind + half)]
+        sample_neg = neg_tensor[neg_start_ind: (neg_start_ind + half)]
 
     samples = torch.cat([sample_pos, sample_neg], 0)
 
@@ -166,13 +142,13 @@ def unpack_sdf_samples_from_ram(data, subsample=None):
 
 class SDFSamples(torch.utils.data.Dataset):
     def __init__(
-        self,
-        data_source,
-        split,
-        subsample,
-        load_ram=False,
-        print_filename=False,
-        num_files=1000000,
+            self,
+            data_source,
+            split,
+            subsample,
+            load_ram=False,
+            print_filename=False,
+            num_files=1000000,
     ):
         self.subsample = subsample
 

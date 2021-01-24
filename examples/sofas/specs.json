@@ -39,6 +39,9 @@
   "ClampingDistance" : 0.1,
   "CodeRegularization" : true,
   "CodeRegularizationLambda" : 1e-4,
-  "CodeBound" : 1.0
+  "CodeBound" : 1.0,
+  "CubeSize" : 50,
+  "BoxSize" : 2,
+  "VoxelRadius" : 1.5
 }
 
