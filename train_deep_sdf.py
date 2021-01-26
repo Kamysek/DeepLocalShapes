@@ -11,6 +11,8 @@ import math
 import json
 import time
 
+from sklearn.neighbors import KDTree
+
 import deep_sdf
 import deep_sdf.workspace as ws
 
@@ -243,7 +245,7 @@ def main_function(experiment_directory, continue_from, batch_split):
 
     specs = ws.load_experiment_specifications(experiment_directory)
 
-    logging.info("Experiment description: \n" + specs["Description"])
+    logging.info("Experiment description: \n" + str(specs["Description"]))
 
     data_source = specs["DataSource"]
     train_split_file = specs["TrainSplit"]
@@ -455,47 +457,55 @@ def main_function(experiment_directory, continue_from, batch_split):
         for sdf_data, indices in sdf_loader:
             # sdf_data contains the KDTree of the current scene and all the points in that scene
             # indices is the index of the npz file -> the scene.
-            sdf_tree, sdf_samples = sdf_data
+            sdf_data = sdf_data.reshape(-1, 4)
+            
+            sdf_data.requires_grad = False
+        
+            xyz = sdf_data[:,:3]
+
+            # TODO check leaf_size impact on speed. default = 40
+            # Default metric of kdtree is L2 norm, Paper uses L infinity -> chebyshev
+            sdf_tree = KDTree(xyz, metric="chebyshev", leaf_size=100)
 
             outer_sum = 0.0
 
             optimizer_all.zero_grad()
 
             # Iterate through each grid cell
-            for center_point in range(len(sdf_grid_indices)):
+            for center_point_index in range(len(sdf_grid_indices)):
                 inner_sum = 0.0
                 # Get all indices of the samples that are within the L-radius around the cell center.
-                near_sample_indices = sdf_tree.query_radius(center_point, sdf_grid_radius)
+                near_sample_indices = sdf_tree.query_radius([sdf_grid_indices[center_point_index]], sdf_grid_radius)
                 # Get number of samples located samples within the L-radius around the cell center
                 num_sdf_samples = len(near_sample_indices[0])
+                if num_sdf_samples < 1: 
+                    continue
 
                 # Indexing the flatten lat_vecs array like described here:
                 # https://stackoverflow.com/questions/29142417/4d-position-from-1d-index
-                c_x, c_y, c_z = center_point
-                code = lat_vecs[c_z +
-                                (cube_size * c_y) +
-                                (cube_size * cube_size * c_x) +
-                                (cube_size * cube_size * cube_size * indices)]
+                c_x, c_y, c_z = sdf_grid_indices[center_point_index]
+                code = lat_vecs((c_z + (cube_size * c_y) + (cube_size * cube_size * c_x) + (cube_size * cube_size * cube_size * indices[0])).long())
 
                 for index in near_sample_indices[0]:
                     # Get ground truth
-                    sdf_gt = sdf_samples[index, 3].unsqueeze(1)
+                    sdf_gt = sdf_data[index, 3].unsqueeze(0)
                     sdf_gt = torch.tanh(sdf_gt)
 
                     # Prepare decoder input
                     # Transform global point into local voxel coordinates -> Paper referenced as T_i(x)
-                    transformed_sample = sdf_samples[index, :3] - center_point
-                    decoder_input = torch.cat([code, transformed_sample], dim=1)
+                    transformed_sample = sdf_data[index, :3] - sdf_grid_indices[center_point_index] 
+                    transformed_sample.requires_grad = False  #.retain_grad()
+                    decoder_input = torch.cat([code, transformed_sample], dim=0).expand(1,128).float()
 
                     # Get network prediction of current sample
-                    pred_sdf = decoder(decoder_input)
+                    pred_sdf = decoder(decoder_input) 
 
                     # f_theta - s_j
-                    inner_sum += loss_l1(pred_sdf, sdf_gt.cuda()) / num_sdf_samples
+                    inner_sum += loss_l1(pred_sdf.squeeze(0), sdf_gt.cuda()) / num_sdf_samples
 
                 # Right most part of formula (4) in DeepLS ->  + 1/sigma^2 L2(z_i)
-                if do_code_regularization:
-                    l2_size_loss = torch.sum(torch.norm(code, dim=1))
+                if do_code_regularization and num_sdf_samples != 0:
+                    l2_size_loss = torch.sum(torch.norm(code, dim=0))
 
                     reg_loss = (code_reg_lambda * min(1.0, epoch / 100) * l2_size_loss) / num_sdf_samples
 
@@ -601,7 +611,6 @@ def main_function(experiment_directory, continue_from, batch_split):
                 param_mag_log,
                 epoch,
             )
-
 
 if __name__ == "__main__":
     import argparse

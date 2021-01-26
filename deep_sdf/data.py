@@ -106,11 +106,11 @@ def generate_kdtree(samples):
 
     # TODO check leaf_size impact on speed. default = 40
     # Default metric of kdtree is L2 norm, Paper uses L infinity -> chebyshev
-    tree = KDTree(xyz, metric="chebyshev")
+    tree = KDTree(xyz, metric="chebyshev", leaf_size=100)
 
     # Tree must contain only xyz, because otherwise the distance metric is not working as desired.
     # However we still need the sdf_value therefore we also return the samples.
-    return tree, samples
+    return {'tree': tree, 'samples': samples}
 
 
 def unpack_sdf_samples_from_ram(data, subsample=None):
@@ -187,8 +187,8 @@ class SDFSamples(torch.utils.data.Dataset):
         )
         if self.load_ram:
             return (
-                generate_kdtree(unpack_sdf_samples_from_ram(self.loaded_data[idx], self.subsample)),
+                unpack_sdf_samples_from_ram(self.loaded_data[idx], self.subsample),
                 idx,
             )
         else:
-            return generate_kdtree(unpack_sdf_samples(filename, self.subsample)), idx
+            return unpack_sdf_samples(filename, self.subsample), idx
