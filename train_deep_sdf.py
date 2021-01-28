@@ -370,7 +370,7 @@ def main_function(experiment_directory, continue_from, batch_split):
         )
     )
 
-    loss_l1 = torch.nn.L1Loss(reduction="sum")
+    loss_l1 = torch.nn.L1Loss(reduction="sum").cuda()
 
     optimizer_all = torch.optim.Adam(
         [
@@ -454,7 +454,12 @@ def main_function(experiment_directory, continue_from, batch_split):
 
         adjust_learning_rate(lr_schedules, optimizer_all, epoch)
 
+        current_scene = 0
+        len_data_loader = len(sdf_loader)
+
         for sdf_data, indices in sdf_loader:
+            current_scene += 1
+            logging.info("Scene: {}/{}".format(current_scene, len_data_loader))
             # sdf_data contains the KDTree of the current scene and all the points in that scene
             # indices is the index of the npz file -> the scene.
             sdf_data = sdf_data.reshape(-1, 4)
@@ -471,6 +476,7 @@ def main_function(experiment_directory, continue_from, batch_split):
 
             optimizer_all.zero_grad()
 
+            samples_per_hundred_cells = 0
             # Iterate through each grid cell
             for center_point_index in range(len(sdf_grid_indices)):
                 inner_sum = 0.0
@@ -478,6 +484,10 @@ def main_function(experiment_directory, continue_from, batch_split):
                 near_sample_indices = sdf_tree.query_radius([sdf_grid_indices[center_point_index]], sdf_grid_radius)
                 # Get number of samples located samples within the L-radius around the cell center
                 num_sdf_samples = len(near_sample_indices[0])
+                samples_per_hundred_cells += num_sdf_samples
+                if center_point_index % 100 == 0:
+                    logging.info("Grid Cell: {}/{} with {} samples/100 cells.".format(center_point_index, len(sdf_grid_indices), samples_per_hundred_cells))
+                    samples_per_hundred_cells = 0
                 if num_sdf_samples < 1: 
                     continue
 
@@ -516,7 +526,7 @@ def main_function(experiment_directory, continue_from, batch_split):
 
                 outer_sum += inner_sum.item()
 
-            logging.debug("loss = {}".format(outer_sum))
+            logging.info("loss = {}".format(outer_sum))
 
             loss_log.append(outer_sum)
 
@@ -587,7 +597,6 @@ def main_function(experiment_directory, continue_from, batch_split):
             """
 
         end = time.time()
-
         seconds_elapsed = end - start
         timing_log.append(seconds_elapsed)
 
