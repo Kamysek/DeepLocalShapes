@@ -356,7 +356,7 @@ def main_function(experiment_directory, continue_from, batch_split):
     # TODO check if there is something better than Embedding to store codes.
     # TODO Not sure if max_norm=code_bound is necessary
     # lat_vecs_size is num_scences times the grid (cube_size^3)
-    lat_vec_size = num_scenes * (cube_size * cube_size * cube_size)
+    lat_vec_size = num_scenes * (cube_size**3)
     lat_vecs = torch.nn.Embedding(lat_vec_size, latent_size, max_norm=code_bound)
     torch.nn.init.normal_(
         lat_vecs.weight.data,
@@ -483,8 +483,9 @@ def main_function(experiment_directory, continue_from, batch_split):
 
                 # Indexing the flatten lat_vecs array like described here:
                 # https://stackoverflow.com/questions/29142417/4d-position-from-1d-index
-                c_x, c_y, c_z = sdf_grid_indices[center_point_index]
-                code = lat_vecs((c_z + (cube_size * c_y) + (cube_size * cube_size * c_x) + (cube_size * cube_size * cube_size * indices[0])).long())
+                #c_x, c_y, c_z = sdf_grid_indices[center_point_index]
+                #code = lat_vecs((c_z + (cube_size * c_y) + (cube_size * cube_size * c_x) + (cube_size * cube_size * cube_size * indices[0])).long())
+                code = lat_vecs((center_point_index + indices[0] * (cube_size**3)).long())
 
                 for index in near_sample_indices[0]:
                     # Get ground truth
