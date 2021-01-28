@@ -16,6 +16,11 @@ from sklearn.neighbors import KDTree
 import deep_sdf
 import deep_sdf.workspace as ws
 
+import sys
+import warnings
+
+if not sys.warnoptions:
+    warnings.simplefilter("ignore")
 
 class LearningRateSchedule:
     def get_learning_rate(self, epoch):
