@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # Copyright 2004-present Facebook. All Rights Reserved.
 
+from numpy.core.numeric import outer
 import torch
 import torch.utils.data as data_utils
 import signal
@@ -321,8 +322,8 @@ def main_function(experiment_directory, continue_from, batch_split):
 
     logging.info("training with {} GPU(s)".format(torch.cuda.device_count()))
 
-    # if torch.cuda.device_count() > 1:
-    decoder = torch.nn.DataParallel(decoder)
+    if torch.cuda.device_count() > 1:
+        decoder = torch.nn.DataParallel(decoder)
 
     num_epochs = specs["NumEpochs"]
     log_frequency = get_spec_with_default(specs, "LogFrequency", 10)
@@ -363,7 +364,7 @@ def main_function(experiment_directory, continue_from, batch_split):
     # TODO Not sure if max_norm=code_bound is necessary
     # lat_vecs_size is num_scences times the grid (cube_size^3)
     lat_vec_size = num_scenes * (cube_size**3)
-    lat_vecs = torch.nn.Embedding(lat_vec_size, latent_size, max_norm=code_bound)
+    lat_vecs = torch.nn.Embedding(lat_vec_size, latent_size, max_norm=code_bound).cuda()
     torch.nn.init.normal_(
         lat_vecs.weight.data,
         0.0,
@@ -461,11 +462,13 @@ def main_function(experiment_directory, continue_from, batch_split):
         adjust_learning_rate(lr_schedules, optimizer_all, epoch)
 
         current_scene = 0
+        scene_avg_loss = 0.0
         len_data_loader = len(sdf_loader)
+
 
         for sdf_data, indices in sdf_loader:
             current_scene += 1
-            logging.info("Scene: {}/{}".format(current_scene, len_data_loader))
+            #logging.info("Scene: {}/{}".format(current_scene, len_data_loader))
             # sdf_data contains the KDTree of the current scene and all the points in that scene
             # indices is the index of the npz file -> the scene.
             sdf_data = sdf_data.reshape(-1, 4)
@@ -496,44 +499,33 @@ def main_function(experiment_directory, continue_from, batch_split):
                 # https://stackoverflow.com/questions/29142417/4d-position-from-1d-index
                 #c_x, c_y, c_z = sdf_grid_indices[center_point_index]
                 #code = lat_vecs((c_z + (cube_size * c_y) + (cube_size * cube_size * c_x) + (cube_size * cube_size * cube_size * indices[0])).long())
-                code = lat_vecs((center_point_index + indices[0] * (cube_size**3)).long())
-                decoder_inputs = []
-                sdf_gts = []
-
-                for index in near_sample_indices[0]:
-                    # Get ground truth
-                    sdf_gt = sdf_data[index, 3].unsqueeze(0)
-                    sdf_gt = torch.tanh(sdf_gt)
-                    sdf_gts.append(sdf_gt)
-
-                    # Prepare decoder input
-                    # Transform global point into local voxel coordinates -> Paper referenced as T_i(x)
-                    transformed_sample = sdf_data[index, :3] - sdf_grid_indices[center_point_index] 
-                    transformed_sample.requires_grad = False  #.retain_grad()
-                    decoder_input = torch.cat([code, transformed_sample], dim=0).expand(1,128).float()
-                    decoder_inputs.append(decoder_input)
-                
-                decoder_inputs_tensor = torch.cat(decoder_inputs)
+                code = lat_vecs((center_point_index + indices[0].cuda() * (cube_size**3)).long()).cuda()
+                sdf_gt = sdf_data[near_sample_indices[0], 3].unsqueeze(1)
+                sdf_gt = torch.tanh(sdf_gt)
+                transformed_sample = sdf_data[near_sample_indices[0], :3] - sdf_grid_indices[center_point_index] 
+                transformed_sample.requires_grad = False
+                code = code.expand(1, 125)
+                code = code.repeat(transformed_sample.shape[0], 1)
+                decoder_input = torch.cat([code, transformed_sample.cuda()], dim=1).float().cuda()
                 # Get network prediction of current sample
-                pred_sdf = decoder(decoder_inputs_tensor) 
-
-                sdf_gts_tensor = torch.cat(sdf_gts)
+                pred_sdf = decoder(decoder_input) 
                 # f_theta - s_j
-                inner_sum = loss_l1(pred_sdf.squeeze(0), sdf_gts_tensor.cuda()) / num_sdf_samples_total
+                inner_sum = loss_l1(pred_sdf.squeeze(0), sdf_gt.cuda()) / num_sdf_samples
 
                 # Right most part of formula (4) in DeepLS ->  + 1/sigma^2 L2(z_i)
                 if do_code_regularization and num_sdf_samples != 0:
                     l2_size_loss = torch.sum(torch.norm(code, dim=0))
 
-                    reg_loss = (code_reg_lambda * min(1.0, epoch / 100) * l2_size_loss) / num_sdf_samples_total
+                    reg_loss = (code_reg_lambda * min(1.0, epoch / 100) * l2_size_loss) / num_sdf_samples
 
-                    inner_sum = inner_sum + reg_loss.cuda()
+                    inner_sum = inner_sum.cuda() + reg_loss.cuda()
 
                 inner_sum.backward()
 
                 outer_sum += inner_sum.item()
 
-            logging.info("loss = {}".format(outer_sum))
+            scene_avg_loss += outer_sum
+            logging.info("Scene {} loss = {}".format(current_scene, outer_sum))
 
             loss_log.append(outer_sum)
 
@@ -602,7 +594,8 @@ def main_function(experiment_directory, continue_from, batch_split):
 
             optimizer_all.step()
             """
-
+        
+        logging.info("Epoch scene average loss: {}".format((scene_avg_loss/current_scene)))
         end = time.time()
         seconds_elapsed = end - start
         timing_log.append(seconds_elapsed)
