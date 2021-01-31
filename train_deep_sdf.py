@@ -19,7 +19,8 @@ import deep_sdf.workspace as ws
 
 import sys
 import warnings
-from tqdm import tqdm
+import torch.multiprocessing as mp
+import functools
 
 if not sys.warnoptions:
     warnings.simplefilter("ignore")
@@ -246,6 +247,52 @@ def append_parameter_magnitudes(param_mag_log, model):
             param_mag_log[name] = []
         param_mag_log[name].append(param.data.norm().item())
 
+
+def f(center_point, sdf_tree, sdf_grid_radius, lat_vecs, sdf_data, indices, cube_size, outer_sum, outer_lock, decoder, loss_l1, do_code_regularization, code_reg_lambda, epoch):
+    inner_sum = 0.0
+    
+    # Get all indices of the samples that are within the L-radius around the cell center.
+    near_sample_indices = sdf_tree.query_radius([center_point], sdf_grid_radius)
+    
+    # Get number of samples located within the L-radius around the cell center
+    num_sdf_samples = len(near_sample_indices[0])
+    if num_sdf_samples < 1: 
+       return
+    
+    # Extract code from lat_vecs
+    code = lat_vecs((center_point.index + indices[0].cuda() * (cube_size**3)).long()).cuda()
+    
+    # Get groundtruth sdf value
+    sdf_gt = sdf_data[near_sample_indices[0], 3].unsqueeze(1)
+    sdf_gt = torch.tanh(sdf_gt)
+    
+    transformed_sample = sdf_data[near_sample_indices[0], :3] - center_point
+    transformed_sample.requires_grad = False
+    
+    code = code.expand(1, 125)
+    code = code.repeat(transformed_sample.shape[0], 1)
+    
+    decoder_input = torch.cat([code, transformed_sample.cuda()], dim=1).float().cuda()
+    
+    # Get network prediction of current sample
+    pred_sdf = decoder(decoder_input) 
+    
+    # f_theta - s_j
+    inner_sum = loss_l1(pred_sdf.squeeze(0), sdf_gt.cuda()) / num_sdf_samples
+
+    # Right most part of formula (4) in DeepLS ->  + 1/sigma^2 L2(z_i)
+    if do_code_regularization and num_sdf_samples != 0:
+        l2_size_loss = torch.sum(torch.norm(code, dim=0))
+
+        reg_loss = (code_reg_lambda * min(1.0, epoch / 100) * l2_size_loss) / num_sdf_samples
+
+        inner_sum = inner_sum.cuda() + reg_loss.cuda()
+
+    inner_sum.backward()
+
+    with outer_lock:
+        outer_sum.value += inner_sum.item()
+        return
 
 def main_function(experiment_directory, continue_from, batch_split):
     logging.debug("running " + experiment_directory)
@@ -485,44 +532,37 @@ def main_function(experiment_directory, continue_from, batch_split):
             outer_sum = 0.0
 
             optimizer_all.zero_grad()
-            # Iterate through each grid cell
-            for center_point_index in tqdm(range(len(sdf_grid_indices))):
-                inner_sum = 0.0
-                # Get all indices of the samples that are within the L-radius around the cell center.
-                near_sample_indices = sdf_tree.query_radius([sdf_grid_indices[center_point_index]], sdf_grid_radius)
-                # Get number of samples located samples within the L-radius around the cell center
-                num_sdf_samples = len(near_sample_indices[0])
-                if num_sdf_samples < 1: 
-                    continue
+              
+            
+            if __name__ == '__main__': 
+                # Shared value counter and lock
+                manager = mp.Manager()
+                outer_sum = manager.Value('f', 0)
+                outer_lock = manager.Lock()
+                
+                # Create Pool for multiprocessing
+                pool = mp.Pool()
 
-                # Indexing the flatten lat_vecs array like described here:
-                # https://stackoverflow.com/questions/29142417/4d-position-from-1d-index
-                #c_x, c_y, c_z = sdf_grid_indices[center_point_index]
-                #code = lat_vecs((c_z + (cube_size * c_y) + (cube_size * cube_size * c_x) + (cube_size * cube_size * cube_size * indices[0])).long())
-                code = lat_vecs((center_point_index + indices[0].cuda() * (cube_size**3)).long()).cuda()
-                sdf_gt = sdf_data[near_sample_indices[0], 3].unsqueeze(1)
-                sdf_gt = torch.tanh(sdf_gt)
-                transformed_sample = sdf_data[near_sample_indices[0], :3] - sdf_grid_indices[center_point_index] 
-                transformed_sample.requires_grad = False
-                code = code.expand(1, 125)
-                code = code.repeat(transformed_sample.shape[0], 1)
-                decoder_input = torch.cat([code, transformed_sample.cuda()], dim=1).float().cuda()
-                # Get network prediction of current sample
-                pred_sdf = decoder(decoder_input) 
-                # f_theta - s_j
-                inner_sum = loss_l1(pred_sdf.squeeze(0), sdf_gt.cuda()) / num_sdf_samples
+                # Apply map on array of center points
+                res = pool.map(functools.partial(f, 
+                                sdf_tree = sdf_tree,
+                                sdf_tree = sdf_tree, 
+                                sdf_grid_radius = sdf_grid_radius,
+                                lat_vecs = lat_vecs, 
+                                sdf_data = sdf_data, 
+                                indices = indices, 
+                                cube_size = cube_size, 
+                                outer_sum = outer_sum, 
+                                outer_lock = outer_lock, 
+                                decoder = decoder, 
+                                loss_l1 = loss_l1, 
+                                do_code_regularization = do_code_regularization, 
+                                code_reg_lambda = code_reg_lambda, 
+                                epoch = epoch ), enumerate(sdf_grid_indices))
+                            
+                pool.close()
+                pool.join()
 
-                # Right most part of formula (4) in DeepLS ->  + 1/sigma^2 L2(z_i)
-                if do_code_regularization and num_sdf_samples != 0:
-                    l2_size_loss = torch.sum(torch.norm(code, dim=0))
-
-                    reg_loss = (code_reg_lambda * min(1.0, epoch / 100) * l2_size_loss) / num_sdf_samples
-
-                    inner_sum = inner_sum.cuda() + reg_loss.cuda()
-
-                inner_sum.backward()
-
-                outer_sum += inner_sum.item()
 
             scene_avg_loss += outer_sum
             logging.info("Scene {} loss = {}".format(current_scene, outer_sum))
