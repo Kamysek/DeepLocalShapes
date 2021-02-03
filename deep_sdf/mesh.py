@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 # Copyright 2004-present Facebook. All Rights Reserved.
 
+from json import decoder
 import logging
+from random import sample
 import numpy as np
 import plyfile
 import skimage.measure
@@ -10,9 +12,10 @@ import torch
 
 import deep_sdf.utils
 
+from sklearn.neighbors import KDTree
+from tqdm import tqdm
 
-def create_mesh(
-    decoder, latent_vec, filename, N=256, max_batch=32 ** 3, offset=None, scale=None
+def create_mesh(decoder, latent_vec, cube_size, box_size, filename, N=128, max_batch=32 ** 3, offset=None, scale=None
 ):
     start = time.time()
     ply_filename = filename
@@ -38,22 +41,41 @@ def create_mesh(
     samples[:, 1] = (samples[:, 1] * voxel_size) + voxel_origin[1]
     samples[:, 2] = (samples[:, 2] * voxel_size) + voxel_origin[0]
 
-    num_samples = N ** 3
-
+    #num_samples = N ** 3
+    samples_half = samples.shape[0] // 2
     samples.requires_grad = False
 
-    head = 0
+    grid_radius = (box_size * 2) / cube_size
 
-    while head < num_samples:
-        sample_subset = samples[head : min(head + max_batch, num_samples), 0:3].cuda()
+    samples_counter = np.zeros((samples.shape[0], 1), dtype=np.int)
+    
+    tree_samples_first = samples[:samples_half, 0:3].cpu().numpy()
+    tree_samples_second = samples[samples_half:, 0:3].cpu().numpy()
+    tree_start = time.time()
+    logging.debug("Building fist tree...")
+    sdf_tree_first = KDTree(tree_samples_first, metric="chebyshev", leaf_size=100)
+    logging.debug("Building second tree...")
+    sdf_tree_second = KDTree(tree_samples_second, metric="chebyshev", leaf_size=100)
+    logging.debug("Took {} seconds.".format(time.time() - tree_start))
 
-        samples[head : min(head + max_batch, num_samples), 3] = (
-            deep_sdf.utils.decode_sdf(decoder, latent_vec, sample_subset)
-            .squeeze(1)
-            .detach()
-            .cpu()
-        )
-        head += max_batch
+    sdf_grid_indices = deep_sdf.data.generate_grid_center_indices(cube_size=cube_size, box_size=box_size)
+    for center_point_index in tqdm(range(len(sdf_grid_indices))):
+        near_sample_indices = sdf_tree_first.query_radius([sdf_grid_indices[center_point_index]], grid_radius)
+        num_sdf_samples = len(near_sample_indices[0])
+        if num_sdf_samples < 1: 
+            continue
+        near_sample_indices = near_sample_indices[0]
+        near_sample_indices_two = sdf_tree_second.query_radius([sdf_grid_indices[center_point_index]], grid_radius)
+        near_sample_indices = np.append(near_sample_indices, near_sample_indices_two[0])
+        code = latent_vec[center_point_index].cuda()
+        transformed_sample = samples[near_sample_indices, 0:3] - sdf_grid_indices[center_point_index] 
+        code = code.expand(1, 125)
+        code = code.repeat(transformed_sample.shape[0], 1)
+        decoder_input = torch.cat([code, transformed_sample.cuda()], dim=1).float().cuda()
+        samples[near_sample_indices, 3] = decoder(decoder_input).squeeze(1).detach().cpu()
+        samples_counter[near_sample_indices, 0] += 1
+    
+    logging.debug("Max count for a single sample is {}".format(max(samples_counter)[0]))
 
     sdf_values = samples[:, 3]
     sdf_values = sdf_values.reshape(N, N, N)

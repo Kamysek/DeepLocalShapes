@@ -12,11 +12,17 @@ import torch
 import deep_sdf
 import deep_sdf.workspace as ws
 
+from train_deep_sdf import get_spec_with_default
+
+from sklearn.neighbors import KDTree
 
 def reconstruct(
     decoder,
     num_iterations,
     latent_size,
+    cube_size,
+    box_size,
+    voxel_radius,
     test_sdf,
     stat,
     clamp_dist,
@@ -34,10 +40,14 @@ def reconstruct(
     decreased_by = 10
     adjust_lr_every = int(num_iterations / 2)
 
+    sdf_grid_indices = deep_sdf.data.generate_grid_center_indices(cube_size=cube_size, box_size=box_size)
+    sdf_grid_radius = voxel_radius * ((box_size * 2) / cube_size)
+
     if type(stat) == type(0.1):
-        latent = torch.ones(1, latent_size).normal_(mean=0, std=stat).cuda()
+        latent = torch.ones(len(sdf_grid_indices), latent_size).normal_(mean=0, std=stat).cuda()
     else:
         latent = torch.normal(stat[0].detach(), stat[1].detach()).cuda()
+        raise NotImplementedError # TODO
 
     latent.requires_grad = True
 
@@ -51,35 +61,33 @@ def reconstruct(
         decoder.eval()
         sdf_data = deep_sdf.data.unpack_sdf_samples_from_ram(
             test_sdf, num_samples
-        ).cuda()
+        )
         xyz = sdf_data[:, 0:3]
-        sdf_gt = sdf_data[:, 3].unsqueeze(1)
-
-        sdf_gt = torch.clamp(sdf_gt, -clamp_dist, clamp_dist)
-
+        sdf_tree = KDTree(xyz, metric="chebyshev", leaf_size=40)
         adjust_learning_rate(lr, optimizer, e, decreased_by, adjust_lr_every)
-
         optimizer.zero_grad()
-
-        latent_inputs = latent.expand(num_samples, -1)
-
-        inputs = torch.cat([latent_inputs, xyz], 1).cuda()
-
-        pred_sdf = decoder(inputs)
-
-        # TODO: why is this needed?
-        if e == 0:
-            pred_sdf = decoder(inputs)
-
-        pred_sdf = torch.clamp(pred_sdf, -clamp_dist, clamp_dist)
-
-        loss = loss_l1(pred_sdf, sdf_gt)
+        loss = 0.0
+        for center_point_index in range(len(sdf_grid_indices)):
+            near_sample_indices = sdf_tree.query_radius([sdf_grid_indices[center_point_index]], sdf_grid_radius)
+            num_sdf_samples = len(near_sample_indices[0])
+            if num_sdf_samples < 1: 
+                continue
+            code = latent[center_point_index].cuda()
+            sdf_gt = sdf_data[near_sample_indices[0], 3].unsqueeze(1)
+            sdf_gt = torch.tanh(sdf_gt)
+            transformed_sample = sdf_data[near_sample_indices[0], :3] - sdf_grid_indices[center_point_index] 
+            transformed_sample.requires_grad = False
+            code = code.expand(1, 125)
+            code = code.repeat(transformed_sample.shape[0], 1)
+            decoder_input = torch.cat([code, transformed_sample.cuda()], dim=1).float().cuda()
+            pred_sdf = decoder(decoder_input)
+            loss += loss_l1(pred_sdf, sdf_gt.cuda()) / len(sdf_grid_indices)
         if l2reg:
             loss += 1e-4 * torch.mean(latent.pow(2))
         loss.backward()
         optimizer.step()
 
-        if e % 50 == 0:
+        if e % 1 == 0:
             logging.debug(loss.cpu().data.numpy())
             logging.debug(e)
             logging.debug(latent.norm())
@@ -162,10 +170,14 @@ if __name__ == "__main__":
     arch = __import__("networks." + specs["NetworkArch"], fromlist=["Decoder"])
 
     latent_size = specs["CodeLength"]
+    cube_size = specs["CubeSize"]
+    box_size = specs["BoxSize"]
+    voxel_radius = specs["VoxelRadius"]
 
     decoder = arch.Decoder(latent_size, **specs["NetworkSpecs"])
 
-    decoder = torch.nn.DataParallel(decoder)
+    if torch.cuda.device_count() > 1:
+        decoder = torch.nn.DataParallel(decoder)
 
     saved_model_state = torch.load(
         os.path.join(
@@ -176,7 +188,10 @@ if __name__ == "__main__":
 
     decoder.load_state_dict(saved_model_state["model_state_dict"])
 
-    decoder = decoder.module.cuda()
+    if torch.cuda.device_count() > 1:
+        decoder = decoder.module.cuda()
+    else:
+        decoder = decoder.cuda()
 
     with open(args.split_filename, "r") as f:
         split = json.load(f)
@@ -254,6 +269,9 @@ if __name__ == "__main__":
                 decoder,
                 int(args.iterations),
                 latent_size,
+                cube_size,
+                box_size,
+                voxel_radius,
                 data_sdf,
                 0.01,  # [emp_mean,emp_var],
                 0.1,
@@ -266,7 +284,7 @@ if __name__ == "__main__":
             logging.debug("current_error avg: {}".format((err_sum / (ii + 1))))
             logging.debug(ii)
 
-            logging.debug("latent: {}".format(latent.detach().cpu().numpy()))
+            #logging.debug("latent: {}".format(latent.detach().cpu().numpy()))
 
             decoder.eval()
 
@@ -277,7 +295,7 @@ if __name__ == "__main__":
                 start = time.time()
                 with torch.no_grad():
                     deep_sdf.mesh.create_mesh(
-                        decoder, latent, mesh_filename, N=256, max_batch=int(2 ** 18)
+                        decoder, latent, cube_size, box_size, mesh_filename, N=128, max_batch=int(2 ** 18)
                     )
                 logging.debug("total time: {}".format(time.time() - start))
 
