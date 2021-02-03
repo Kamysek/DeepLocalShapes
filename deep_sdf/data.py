@@ -8,7 +8,6 @@ import os
 import random
 import torch
 import torch.utils.data
-from sklearn.neighbors import KDTree
 
 import deep_sdf.workspace as ws
 
@@ -98,19 +97,6 @@ def generate_grid_center_indices(cube_size=50, box_size=2):
 
     # Create grid indices
     return np.vstack(np.meshgrid(voxel_centers, voxel_centers, voxel_centers)).reshape(3, -1).T
-
-
-def generate_kdtree(samples):
-    # Get all xyz values from extracted samples
-    xyz = samples[:, :3]
-
-    # TODO check leaf_size impact on speed. default = 40
-    # Default metric of kdtree is L2 norm, Paper uses L infinity -> chebyshev
-    tree = KDTree(xyz, metric="chebyshev", leaf_size=100)
-
-    # Tree must contain only xyz, because otherwise the distance metric is not working as desired.
-    # However we still need the sdf_value therefore we also return the samples.
-    return {'tree': tree, 'samples': samples}
 
 
 def unpack_sdf_samples_from_ram(data, subsample=None):
