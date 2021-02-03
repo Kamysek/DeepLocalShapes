@@ -1,27 +1,23 @@
 #!/usr/bin/env python3
 # Copyright 2004-present Facebook. All Rights Reserved.
 
-from threading import Timer
-from numpy.core.numeric import outer
-import torch
-import torch.utils.data as data_utils
-import signal
-import sys
-import os
+import functools
+import json
 import logging
 import math
-import json
+import os
+import signal
+import sys
 import time
-
-from sklearn.neighbors import KDTree
+import warnings
 
 import deep_sdf
 import deep_sdf.workspace as ws
-
-import sys
-import warnings
+import torch
 import torch.multiprocessing as mp
-import functools
+import torch.utils.data as data_utils
+from scipy.spatial import cKDTree
+import numpy as np
 
 if not sys.warnoptions:
     warnings.simplefilter("ignore")
@@ -253,7 +249,7 @@ def trainer(center_point, sdf_tree, sdf_grid_radius, lat_vecs, sdf_data, indices
     inner_sum = 0.0
     
     # Get all indices of the samples that are within the L-radius around the cell center.
-    near_sample_indices = sdf_tree.query_radius([center_point[1]], sdf_grid_radius)
+    near_sample_indices = sdf_tree.query_ball_point(x=[center_point[1]], r=sdf_grid_radius, p=np.inf) 
     
     # Get number of samples located within the L-radius around the cell center
     num_sdf_samples = len(near_sample_indices[0])
@@ -528,13 +524,12 @@ def main_function(experiment_directory, continue_from, batch_split):
 
             # TODO check leaf_size impact on speed. default = 40
             # Default metric of kdtree is L2 norm, Paper uses L infinity -> chebyshev
-            sdf_tree = KDTree(xyz, metric="chebyshev", leaf_size=40)
+            sdf_tree = cKDTree(xyz)
 
             outer_sum = 0.0
 
             optimizer_all.zero_grad()
               
-            
             if __name__ == '__main__': 
                 # Shared value counter and lock
                 mp.set_start_method('spawn', force=True)
@@ -566,8 +561,7 @@ def main_function(experiment_directory, continue_from, batch_split):
                 pool.close()
                 pool.join()
 
-                print("took:{}".format(time.time()-start))
-                print("value:{}".format(outer_sum.value))
+                logging.info("Multiprocessing Time {}".format(time.time() - start))
 
             scene_avg_loss += outer_sum.value
             logging.info("Scene {} loss = {}".format(current_scene, outer_sum))
