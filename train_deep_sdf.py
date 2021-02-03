@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # Copyright 2004-present Facebook. All Rights Reserved.
 
+from threading import Timer
 from numpy.core.numeric import outer
 import torch
 import torch.utils.data as data_utils
@@ -248,11 +249,11 @@ def append_parameter_magnitudes(param_mag_log, model):
         param_mag_log[name].append(param.data.norm().item())
 
 
-def f(center_point, sdf_tree, sdf_grid_radius, lat_vecs, sdf_data, indices, cube_size, outer_sum, outer_lock, decoder, loss_l1, do_code_regularization, code_reg_lambda, epoch):
+def trainer(center_point, sdf_tree, sdf_grid_radius, lat_vecs, sdf_data, indices, cube_size, outer_sum, outer_lock, decoder, loss_l1, do_code_regularization, code_reg_lambda, epoch):
     inner_sum = 0.0
     
     # Get all indices of the samples that are within the L-radius around the cell center.
-    near_sample_indices = sdf_tree.query_radius([center_point], sdf_grid_radius)
+    near_sample_indices = sdf_tree.query_radius([center_point[1]], sdf_grid_radius)
     
     # Get number of samples located within the L-radius around the cell center
     num_sdf_samples = len(near_sample_indices[0])
@@ -260,13 +261,13 @@ def f(center_point, sdf_tree, sdf_grid_radius, lat_vecs, sdf_data, indices, cube
        return
     
     # Extract code from lat_vecs
-    code = lat_vecs((center_point.index + indices[0].cuda() * (cube_size**3)).long()).cuda()
+    code = lat_vecs((center_point[0] + indices[0].cuda() * (cube_size**3)).long()).cuda()
     
     # Get groundtruth sdf value
     sdf_gt = sdf_data[near_sample_indices[0], 3].unsqueeze(1)
     sdf_gt = torch.tanh(sdf_gt)
     
-    transformed_sample = sdf_data[near_sample_indices[0], :3] - center_point
+    transformed_sample = sdf_data[near_sample_indices[0], :3] - center_point[1]
     transformed_sample.requires_grad = False
     
     code = code.expand(1, 125)
@@ -536,16 +537,17 @@ def main_function(experiment_directory, continue_from, batch_split):
             
             if __name__ == '__main__': 
                 # Shared value counter and lock
+                mp.set_start_method('spawn', force=True)
                 manager = mp.Manager()
                 outer_sum = manager.Value('f', 0)
                 outer_lock = manager.Lock()
                 
                 # Create Pool for multiprocessing
+                start = time.time()
                 pool = mp.Pool()
 
                 # Apply map on array of center points
-                res = pool.map(functools.partial(f, 
-                                sdf_tree = sdf_tree,
+                res = pool.map(functools.partial(trainer, 
                                 sdf_tree = sdf_tree, 
                                 sdf_grid_radius = sdf_grid_radius,
                                 lat_vecs = lat_vecs, 
@@ -558,16 +560,19 @@ def main_function(experiment_directory, continue_from, batch_split):
                                 loss_l1 = loss_l1, 
                                 do_code_regularization = do_code_regularization, 
                                 code_reg_lambda = code_reg_lambda, 
-                                epoch = epoch ), enumerate(sdf_grid_indices))
-                            
+                                epoch = epoch), 
+                                enumerate(sdf_grid_indices))
+
                 pool.close()
                 pool.join()
 
+                print("took:{}".format(time.time()-start))
+                print("value:{}".format(outer_sum.value))
 
-            scene_avg_loss += outer_sum
+            scene_avg_loss += outer_sum.value
             logging.info("Scene {} loss = {}".format(current_scene, outer_sum))
 
-            loss_log.append(outer_sum)
+            loss_log.append(outer_sum.value)
 
             optimizer_all.step()
 
