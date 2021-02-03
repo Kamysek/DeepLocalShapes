@@ -16,6 +16,11 @@ from sklearn.neighbors import KDTree
 import deep_sdf
 import deep_sdf.workspace as ws
 
+import sys
+import warnings
+
+if not sys.warnoptions:
+    warnings.simplefilter("ignore")
 
 class LearningRateSchedule:
     def get_learning_rate(self, epoch):
@@ -356,7 +361,7 @@ def main_function(experiment_directory, continue_from, batch_split):
     # TODO check if there is something better than Embedding to store codes.
     # TODO Not sure if max_norm=code_bound is necessary
     # lat_vecs_size is num_scences times the grid (cube_size^3)
-    lat_vec_size = num_scenes * (cube_size * cube_size * cube_size)
+    lat_vec_size = num_scenes * (cube_size**3)
     lat_vecs = torch.nn.Embedding(lat_vec_size, latent_size, max_norm=code_bound)
     torch.nn.init.normal_(
         lat_vecs.weight.data,
@@ -370,7 +375,7 @@ def main_function(experiment_directory, continue_from, batch_split):
         )
     )
 
-    loss_l1 = torch.nn.L1Loss(reduction="sum")
+    loss_l1 = torch.nn.L1Loss(reduction="sum").cuda()
 
     optimizer_all = torch.optim.Adam(
         [
@@ -454,12 +459,19 @@ def main_function(experiment_directory, continue_from, batch_split):
 
         adjust_learning_rate(lr_schedules, optimizer_all, epoch)
 
+        current_scene = 0
+        len_data_loader = len(sdf_loader)
+
         for sdf_data, indices in sdf_loader:
+            current_scene += 1
+            logging.info("Scene: {}/{}".format(current_scene, len_data_loader))
             # sdf_data contains the KDTree of the current scene and all the points in that scene
             # indices is the index of the npz file -> the scene.
-            samples = sdf_data
-
-            xyz = samples.squeeze(0)[:,:3]
+            sdf_data = sdf_data.reshape(-1, 4)
+            
+            sdf_data.requires_grad = False
+        
+            xyz = sdf_data[:,:3]
 
             # TODO check leaf_size impact on speed. default = 40
             # Default metric of kdtree is L2 norm, Paper uses L infinity -> chebyshev
@@ -469,6 +481,7 @@ def main_function(experiment_directory, continue_from, batch_split):
 
             optimizer_all.zero_grad()
 
+            samples_per_hundred_cells = 0
             # Iterate through each grid cell
             for center_point_index in range(len(sdf_grid_indices)):
                 inner_sum = 0.0
@@ -476,34 +489,39 @@ def main_function(experiment_directory, continue_from, batch_split):
                 near_sample_indices = sdf_tree.query_radius([sdf_grid_indices[center_point_index]], sdf_grid_radius)
                 # Get number of samples located samples within the L-radius around the cell center
                 num_sdf_samples = len(near_sample_indices[0])
+                samples_per_hundred_cells += num_sdf_samples
+                if center_point_index % 100 == 0:
+                    logging.info("Grid Cell: {}/{} with {} samples/100 cells.".format(center_point_index, len(sdf_grid_indices), samples_per_hundred_cells))
+                    samples_per_hundred_cells = 0
+                if num_sdf_samples < 1: 
+                    continue
 
                 # Indexing the flatten lat_vecs array like described here:
                 # https://stackoverflow.com/questions/29142417/4d-position-from-1d-index
-                c_x, c_y, c_z = sdf_grid_indices[center_point_index]
-                code = lat_vecs[c_z +
-                                (cube_size * c_y) +
-                                (cube_size * cube_size * c_x) +
-                                (cube_size * cube_size * cube_size * indices.item())]
+                #c_x, c_y, c_z = sdf_grid_indices[center_point_index]
+                #code = lat_vecs((c_z + (cube_size * c_y) + (cube_size * cube_size * c_x) + (cube_size * cube_size * cube_size * indices[0])).long())
+                code = lat_vecs((center_point_index + indices[0] * (cube_size**3)).long())
 
                 for index in near_sample_indices[0]:
                     # Get ground truth
-                    sdf_gt = samples[index, 3].unsqueeze(1)
+                    sdf_gt = sdf_data[index, 3].unsqueeze(0)
                     sdf_gt = torch.tanh(sdf_gt)
 
                     # Prepare decoder input
                     # Transform global point into local voxel coordinates -> Paper referenced as T_i(x)
-                    transformed_sample = samples[index, :3] - sdf_grid_indices[center_point_index]
-                    decoder_input = torch.cat([code, transformed_sample], dim=1)
+                    transformed_sample = sdf_data[index, :3] - sdf_grid_indices[center_point_index] 
+                    transformed_sample.requires_grad = False  #.retain_grad()
+                    decoder_input = torch.cat([code, transformed_sample], dim=0).expand(1,128).float()
 
                     # Get network prediction of current sample
-                    pred_sdf = decoder(decoder_input)
+                    pred_sdf = decoder(decoder_input) 
 
                     # f_theta - s_j
-                    inner_sum += loss_l1(pred_sdf, sdf_gt.cuda()) / num_sdf_samples
+                    inner_sum += loss_l1(pred_sdf.squeeze(0), sdf_gt.cuda()) / num_sdf_samples
 
                 # Right most part of formula (4) in DeepLS ->  + 1/sigma^2 L2(z_i)
-                if do_code_regularization:
-                    l2_size_loss = torch.sum(torch.norm(code, dim=1))
+                if do_code_regularization and num_sdf_samples != 0:
+                    l2_size_loss = torch.sum(torch.norm(code, dim=0))
 
                     reg_loss = (code_reg_lambda * min(1.0, epoch / 100) * l2_size_loss) / num_sdf_samples
 
@@ -513,7 +531,7 @@ def main_function(experiment_directory, continue_from, batch_split):
 
                 outer_sum += inner_sum.item()
 
-            logging.debug("loss = {}".format(outer_sum))
+            logging.info("loss = {}".format(outer_sum))
 
             loss_log.append(outer_sum)
 
@@ -584,7 +602,6 @@ def main_function(experiment_directory, continue_from, batch_split):
             """
 
         end = time.time()
-
         seconds_elapsed = end - start
         timing_log.append(seconds_elapsed)
 
@@ -609,7 +626,6 @@ def main_function(experiment_directory, continue_from, batch_split):
                 param_mag_log,
                 epoch,
             )
-
 
 if __name__ == "__main__":
     import argparse

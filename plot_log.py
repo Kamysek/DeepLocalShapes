@@ -76,7 +76,9 @@ def load_logs(experiment_directory, type):
         raise Exception('unrecognized plot type "{}"'.format(type))
 
     ax.grid()
-    plt.show()
+    #plt.show()
+    filename = "/home/philippgfriedrich/DeepLocalShapes/plots/log_plot_" + type + ".png"
+    plt.savefig(filename)
 
 
 if __name__ == "__main__":
