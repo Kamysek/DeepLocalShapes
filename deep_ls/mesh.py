@@ -13,7 +13,7 @@ import torch
 
 import deep_ls.utils
 
-from sklearn.neighbors import KDTree
+from scipy.spatial import cKDTree
 from tqdm import tqdm
 
 def create_mesh(decoder, latent_vec, cube_size, box_size, filename, N=128, max_batch=32 ** 3, offset=None, scale=None
@@ -42,32 +42,20 @@ def create_mesh(decoder, latent_vec, cube_size, box_size, filename, N=128, max_b
     samples[:, 1] = (samples[:, 1] * voxel_size) + voxel_origin[1]
     samples[:, 2] = (samples[:, 2] * voxel_size) + voxel_origin[0]
 
-    #num_samples = N ** 3
-    samples_half = samples.shape[0] // 2
     samples.requires_grad = False
 
+    box_size = 1
     grid_radius = (box_size * 2) / cube_size
 
     samples_counter = np.zeros((samples.shape[0], 1), dtype=np.int)
-    
-    tree_samples_first = samples[:samples_half, 0:3].cpu().numpy()
-    tree_samples_second = samples[samples_half:, 0:3].cpu().numpy()
-    tree_start = time.time()
-    logging.debug("Building fist tree...")
-    sdf_tree_first = KDTree(tree_samples_first, metric="chebyshev", leaf_size=100)
-    logging.debug("Building second tree...")
-    sdf_tree_second = KDTree(tree_samples_second, metric="chebyshev", leaf_size=100)
-    logging.debug("Took {} seconds.".format(time.time() - tree_start))
-
-    sdf_grid_indices = deep_ls.data.generate_grid_center_indices(cube_size=cube_size, box_size=box_size)
+    sdf_tree = cKDTree(samples[:, 0:3])
+    sdf_grid_indices = deep_ls.data.generate_grid_center_indices(cube_size=cube_size, box_size=1)
     for center_point_index in tqdm(range(len(sdf_grid_indices))):
-        near_sample_indices = sdf_tree_first.query_radius([sdf_grid_indices[center_point_index]], grid_radius)
+        near_sample_indices = sdf_tree.query_ball_point(x=[sdf_grid_indices[center_point_index]], r=grid_radius, p=np.inf) 
         num_sdf_samples = len(near_sample_indices[0])
         if num_sdf_samples < 1: 
             continue
         near_sample_indices = near_sample_indices[0]
-        near_sample_indices_two = sdf_tree_second.query_radius([sdf_grid_indices[center_point_index]], grid_radius)
-        near_sample_indices = np.append(near_sample_indices, near_sample_indices_two[0])
         code = latent_vec[center_point_index].cuda()
         transformed_sample = samples[near_sample_indices, 0:3] - sdf_grid_indices[center_point_index] 
         code = code.expand(1, 125)
@@ -77,6 +65,8 @@ def create_mesh(decoder, latent_vec, cube_size, box_size, filename, N=128, max_b
         samples_counter[near_sample_indices, 0] += 1
     
     logging.debug("Max count for a single sample is {}".format(max(samples_counter)[0]))
+    logging.debug("In total {} samples are touched at least twice.".format(len(np.where(samples_counter>1)[0])))
+    logging.debug("Samples that are never touched: {}".format(len(np.where(samples_counter==0)[0])))
 
     sdf_values = samples[:, 3]
     sdf_values = sdf_values.reshape(N, N, N)
@@ -117,7 +107,7 @@ def convert_sdf_samples_to_ply(
     numpy_3d_sdf_tensor = pytorch_3d_sdf_tensor.numpy()
 
     verts, faces, normals, values = skimage.measure.marching_cubes_lewiner(
-        numpy_3d_sdf_tensor, level=0.0, spacing=[voxel_size] * 3
+        numpy_3d_sdf_tensor, level=None, spacing=[voxel_size] * 3
     )
 
     # transform from voxel coordinates to camera coordinates

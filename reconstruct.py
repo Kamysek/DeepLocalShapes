@@ -13,9 +13,8 @@ import torch
 import deep_ls
 import deep_ls.workspace as ws
 
-from train_deep_ls import get_spec_with_default
-
-from sklearn.neighbors import KDTree
+from scipy.spatial import cKDTree
+import numpy as np
 
 def reconstruct(
     decoder,
@@ -64,12 +63,14 @@ def reconstruct(
             test_sdf, num_samples
         )
         xyz = sdf_data[:, 0:3]
-        sdf_tree = KDTree(xyz, metric="chebyshev", leaf_size=40)
+        #sdf_tree = KDTree(xyz, metric="chebyshev", leaf_size=40)
+        sdf_tree = cKDTree(xyz)
         adjust_learning_rate(lr, optimizer, e, decreased_by, adjust_lr_every)
         optimizer.zero_grad()
         loss = 0.0
         for center_point_index in range(len(sdf_grid_indices)):
-            near_sample_indices = sdf_tree.query_radius([sdf_grid_indices[center_point_index]], sdf_grid_radius)
+            #near_sample_indices = sdf_tree.query_radius([sdf_grid_indices[center_point_index]], sdf_grid_radius)
+            near_sample_indices = sdf_tree.query_ball_point(x=[sdf_grid_indices[center_point_index]], r=sdf_grid_radius, p=np.inf) 
             num_sdf_samples = len(near_sample_indices[0])
             if num_sdf_samples < 1: 
                 continue
