@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-# Copyright 2004-present Facebook. All Rights Reserved.
+# Based on: https://github.com/facebookresearch/DeepSDF using MIT LICENSE (https://github.com/facebookresearch/DeepSDF/blob/master/LICENSE)
+# Copyright 2021-present Philipp Friedrich, Josef Kamysek. All Rights Reserved.
 
 import argparse
 import json
@@ -9,10 +10,10 @@ import random
 import time
 import torch
 
-import deep_sdf
-import deep_sdf.workspace as ws
+import deep_ls
+import deep_ls.workspace as ws
 
-from train_deep_sdf import get_spec_with_default
+from train_deep_ls import get_spec_with_default
 
 from sklearn.neighbors import KDTree
 
@@ -40,7 +41,7 @@ def reconstruct(
     decreased_by = 10
     adjust_lr_every = int(num_iterations / 2)
 
-    sdf_grid_indices = deep_sdf.data.generate_grid_center_indices(cube_size=cube_size, box_size=box_size)
+    sdf_grid_indices = deep_ls.data.generate_grid_center_indices(cube_size=cube_size, box_size=box_size)
     sdf_grid_radius = voxel_radius * ((box_size * 2) / cube_size)
 
     if type(stat) == type(0.1):
@@ -59,7 +60,7 @@ def reconstruct(
     for e in range(num_iterations):
 
         decoder.eval()
-        sdf_data = deep_sdf.data.unpack_sdf_samples_from_ram(
+        sdf_data = deep_ls.data.unpack_sdf_samples_from_ram(
             test_sdf, num_samples
         )
         xyz = sdf_data[:, 0:3]
@@ -99,7 +100,7 @@ def reconstruct(
 if __name__ == "__main__":
 
     arg_parser = argparse.ArgumentParser(
-        description="Use a trained DeepSDF decoder to reconstruct a shape given SDF "
+        description="Use a trained DeepLS decoder to reconstruct a shape given SDF "
         + "samples."
     )
     arg_parser.add_argument(
@@ -144,11 +145,11 @@ if __name__ == "__main__":
         action="store_true",
         help="Skip meshes which have already been reconstructed.",
     )
-    deep_sdf.add_common_args(arg_parser)
+    deep_ls.add_common_args(arg_parser)
 
     args = arg_parser.parse_args()
 
-    deep_sdf.configure_logging(args)
+    deep_ls.configure_logging(args)
 
     def empirical_stat(latent_vecs, indices):
         lat_mat = torch.zeros(0).cuda()
@@ -196,7 +197,7 @@ if __name__ == "__main__":
     with open(args.split_filename, "r") as f:
         split = json.load(f)
 
-    npz_filenames = deep_sdf.data.get_instance_filenames(args.data_source, split)
+    npz_filenames = deep_ls.data.get_instance_filenames(args.data_source, split)
 
     random.shuffle(npz_filenames)
 
@@ -235,7 +236,7 @@ if __name__ == "__main__":
 
         logging.debug("loading {}".format(npz))
 
-        data_sdf = deep_sdf.data.read_sdf_samples_into_ram(full_filename)
+        data_sdf = deep_ls.data.read_sdf_samples_into_ram(full_filename)
 
         for k in range(repeat):
 
@@ -294,7 +295,7 @@ if __name__ == "__main__":
             if not save_latvec_only:
                 start = time.time()
                 with torch.no_grad():
-                    deep_sdf.mesh.create_mesh(
+                    deep_ls.mesh.create_mesh(
                         decoder, latent, cube_size, box_size, mesh_filename, N=128, max_batch=int(2 ** 18)
                     )
                 logging.debug("total time: {}".format(time.time() - start))

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-# Copyright 2004-present Facebook. All Rights Reserved.
+# Based on: https://github.com/facebookresearch/DeepSDF using MIT LICENSE (https://github.com/facebookresearch/DeepSDF/blob/master/LICENSE)
+# Copyright 2021-present Philipp Friedrich, Josef Kamysek. All Rights Reserved.
 
 import argparse
 import json
@@ -7,8 +8,8 @@ import numpy as np
 import os
 import torch
 
-import deep_sdf
-import deep_sdf.workspace as ws
+import deep_ls
+import deep_ls.workspace as ws
 
 
 def code_to_mesh(experiment_directory, checkpoint, keep_normalized=False):
@@ -50,7 +51,7 @@ def code_to_mesh(experiment_directory, checkpoint, keep_normalized=False):
 
     data_source = specs["DataSource"]
 
-    instance_filenames = deep_sdf.data.get_instance_filenames(data_source, train_split)
+    instance_filenames = deep_ls.data.get_instance_filenames(data_source, train_split)
 
     print(len(instance_filenames), " vs ", len(latent_vectors))
 
@@ -91,7 +92,7 @@ def code_to_mesh(experiment_directory, checkpoint, keep_normalized=False):
             scale = normalization_params["scale"]
 
         with torch.no_grad():
-            deep_sdf.mesh.create_mesh(
+            deep_ls.mesh.create_mesh(
                 decoder,
                 latent_vector,
                 mesh_filename,
@@ -105,7 +106,7 @@ def code_to_mesh(experiment_directory, checkpoint, keep_normalized=False):
 if __name__ == "__main__":
 
     arg_parser = argparse.ArgumentParser(
-        description="Use a trained DeepSDF decoder to generate a mesh given a latent code."
+        description="Use a trained DeepLS decoder to generate a mesh given a latent code."
     )
     arg_parser.add_argument(
         "--experiment",
@@ -130,10 +131,10 @@ if __name__ == "__main__":
         action="store_true",
         help="If set, keep the meshes in the normalized scale.",
     )
-    deep_sdf.add_common_args(arg_parser)
+    deep_ls.add_common_args(arg_parser)
 
     args = arg_parser.parse_args()
 
-    deep_sdf.configure_logging(args)
+    deep_ls.configure_logging(args)
 
     code_to_mesh(args.experiment_directory, args.checkpoint, args.keep_normalized)

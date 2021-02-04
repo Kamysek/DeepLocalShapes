@@ -4,7 +4,7 @@
   "DataSource" : "data",
   "TrainSplit" : "examples/splits/sv2_sofas_train.json",
   "TestSplit" : "examples/splits/sv2_sofas_test.json",
-  "NetworkArch" : "deep_sdf_decoder",
+  "NetworkArch" : "deep_ls_decoder",
   "NetworkSpecs" : {
     "dims" : [ 128, 128, 128, 128 ],
     "dropout" : [],

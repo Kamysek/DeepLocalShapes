@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-# Copyright 2004-present Facebook. All Rights Reserved.
+# Based on: https://github.com/facebookresearch/DeepSDF using MIT LICENSE (https://github.com/facebookresearch/DeepSDF/blob/master/LICENSE)
+# Copyright 2021-present Philipp Friedrich, Josef Kamysek. All Rights Reserved.
 
 import functools
 import json
@@ -11,8 +12,8 @@ import sys
 import time
 import warnings
 
-import deep_sdf
-import deep_sdf.workspace as ws
+import deep_ls
+import deep_ls.workspace as ws
 import torch
 import torch.multiprocessing as mp
 import torch.utils.data as data_utils
@@ -375,7 +376,7 @@ def main_function(experiment_directory, continue_from, batch_split):
     with open(train_split_file, "r") as f:
         train_split = json.load(f)
 
-    sdf_dataset = deep_sdf.data.SDFSamples(
+    sdf_dataset = deep_ls.data.SDFSamples(
         data_source, train_split, num_samp_per_scene, load_ram=False
     )
 
@@ -390,7 +391,7 @@ def main_function(experiment_directory, continue_from, batch_split):
         drop_last=True,
     )
 
-    sdf_grid_indices = deep_sdf.data.generate_grid_center_indices(cube_size=cube_size, box_size=box_size)
+    sdf_grid_indices = deep_ls.data.generate_grid_center_indices(cube_size=cube_size, box_size=box_size)
 
     # voxel_radius is defined as 1.5 times the voxel side length (see DeepLS sec. 4.1) since that value provides
     # a good trade of between accuracy and efficiency
@@ -569,71 +570,7 @@ def main_function(experiment_directory, continue_from, batch_split):
             loss_log.append(outer_sum.value)
 
             optimizer_all.step()
-
-            # DeepSDF Code:
-            """
-            # Process the input data
-            sdf_data = sdf_data.reshape(-1, 4)
-
-            num_sdf_samples = sdf_data.shape[0]
-
-            sdf_data.requires_grad = False
-
-            xyz = sdf_data[:, 0:3]
-            sdf_gt = sdf_data[:, 3].unsqueeze(1)
-
-            if enforce_minmax:
-                sdf_gt = torch.clamp(sdf_gt, minT, maxT)
-
-            xyz = torch.chunk(xyz, batch_split)
-            indices = torch.chunk(
-                indices.unsqueeze(-1).repeat(1, num_samp_per_scene).view(-1),
-                batch_split,
-            )
-
-            sdf_gt = torch.chunk(sdf_gt, batch_split)
-
-            batch_loss = 0.0
-
-            optimizer_all.zero_grad()
-
-            for i in range(batch_split):
-
-                batch_vecs = lat_vecs(indices[i])
-
-                input = torch.cat([batch_vecs, xyz[i]], dim=1)
-
-                # NN optimization
-                pred_sdf = decoder(input)
-
-                if enforce_minmax:
-                    pred_sdf = torch.clamp(pred_sdf, minT, maxT)
-
-                chunk_loss = loss_l1(pred_sdf, sdf_gt[i].cuda()) / num_sdf_samples
-
-                if do_code_regularization:
-                    l2_size_loss = torch.sum(torch.norm(batch_vecs, dim=1))
-                    reg_loss = (
-                        code_reg_lambda * min(1, epoch / 100) * l2_size_loss
-                    ) / num_sdf_samples
-
-                    chunk_loss = chunk_loss + reg_loss.cuda()
-
-                chunk_loss.backward()
-
-                batch_loss += chunk_loss.item()
-
-            logging.debug("loss = {}".format(batch_loss))
-
-            loss_log.append(batch_loss)
-
-            if grad_clip is not None:
-
-                torch.nn.utils.clip_grad_norm_(decoder.parameters(), grad_clip)
-
-            optimizer_all.step()
-            """
-        
+                    
         logging.info("Epoch scene average loss: {}".format((scene_avg_loss/current_scene)))
         end = time.time()
         seconds_elapsed = end - start
@@ -664,7 +601,7 @@ def main_function(experiment_directory, continue_from, batch_split):
 if __name__ == "__main__":
     import argparse
 
-    arg_parser = argparse.ArgumentParser(description="Train a DeepSDF autodecoder")
+    arg_parser = argparse.ArgumentParser(description="Train a DeepLS autodecoder")
     arg_parser.add_argument(
         "--experiment",
         "-e",
@@ -692,10 +629,10 @@ if __name__ == "__main__":
              + "sizes in memory constrained environments.",
     )
 
-    deep_sdf.add_common_args(arg_parser)
+    deep_ls.add_common_args(arg_parser)
 
     args = arg_parser.parse_args()
 
-    deep_sdf.configure_logging(args)
+    deep_ls.configure_logging(args)
 
     main_function(args.experiment_directory, args.continue_from, int(args.batch_split))

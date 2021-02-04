@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-# Copyright 2004-present Facebook. All Rights Reserved.
+# Based on: https://github.com/facebookresearch/DeepSDF using MIT LICENSE (https://github.com/facebookresearch/DeepSDF/blob/master/LICENSE)
+# Copyright 2021-present Philipp Friedrich, Josef Kamysek. All Rights Reserved.
 
 import glob
 import logging
@@ -9,7 +10,7 @@ import random
 import torch
 import torch.utils.data
 
-import deep_sdf.workspace as ws
+import deep_ls.workspace as ws
 
 
 def get_instance_filenames(data_source, split):
