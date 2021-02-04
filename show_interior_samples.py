@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-# Copyright 2004-present Facebook. All Rights Reserved.
+# Based on: https://github.com/facebookresearch/DeepSDF using MIT LICENSE (https://github.com/facebookresearch/DeepSDF/blob/master/LICENSE)
+# Copyright 2021-present Philipp Friedrich, Josef Kamysek. All Rights Reserved.
 
 import ctypes
-import deep_sdf.data
+import deep_ls.data
 import sys
 
 import OpenGL.GL as gl
@@ -12,7 +13,7 @@ if __name__ == "__main__":
 
     npz_filename = sys.argv[1]
 
-    data = deep_sdf.data.read_sdf_samples_into_ram(npz_filename)
+    data = deep_ls.data.read_sdf_samples_into_ram(npz_filename)
 
     xyz_neg = data[1][:, 0:3].numpy().astype(ctypes.c_float)
 

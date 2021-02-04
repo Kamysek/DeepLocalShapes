@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-# Copyright 2004-present Facebook. All Rights Reserved.
+# Based on: https://github.com/facebookresearch/DeepSDF using MIT LICENSE (https://github.com/facebookresearch/DeepSDF/blob/master/LICENSE)
+# Copyright 2021-present Philipp Friedrich, Josef Kamysek. All Rights Reserved.
 
 from json import decoder
 import logging
@@ -10,7 +11,7 @@ import skimage.measure
 import time
 import torch
 
-import deep_sdf.utils
+import deep_ls.utils
 
 from sklearn.neighbors import KDTree
 from tqdm import tqdm
@@ -58,7 +59,7 @@ def create_mesh(decoder, latent_vec, cube_size, box_size, filename, N=128, max_b
     sdf_tree_second = KDTree(tree_samples_second, metric="chebyshev", leaf_size=100)
     logging.debug("Took {} seconds.".format(time.time() - tree_start))
 
-    sdf_grid_indices = deep_sdf.data.generate_grid_center_indices(cube_size=cube_size, box_size=box_size)
+    sdf_grid_indices = deep_ls.data.generate_grid_center_indices(cube_size=cube_size, box_size=box_size)
     for center_point_index in tqdm(range(len(sdf_grid_indices))):
         near_sample_indices = sdf_tree_first.query_radius([sdf_grid_indices[center_point_index]], grid_radius)
         num_sdf_samples = len(near_sample_indices[0])

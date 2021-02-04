@@ -1,22 +1,10 @@
-# DeepSDF
+Based on: https://github.com/facebookresearch/DeepSDF using MIT LICENSE (https://github.com/facebookresearch/DeepSDF/blob/master/LICENSE)
+Copyright 2021-present Philipp Friedrich, Josef Kamysek. All Rights Reserved.
 
-This is an implementation of the CVPR '19 paper "DeepSDF: Learning Continuous Signed Distance Functions for Shape Representation" by Park et al. See the paper [here][6]. 
+# DeepLS
 
-[![DeepSDF Video](https://img.youtube.com/vi/LILRJzMQw5o/0.jpg)](https://www.youtube.com/watch?v=LILRJzMQw5o)
-
-## Citing DeepSDF
-
-If you use DeepSDF in your research, please cite the
-[paper](http://openaccess.thecvf.com/content_CVPR_2019/html/Park_DeepSDF_Learning_Continuous_Signed_Distance_Functions_for_Shape_Representation_CVPR_2019_paper.html):
-```
-@InProceedings{Park_2019_CVPR,
-author = {Park, Jeong Joon and Florence, Peter and Straub, Julian and Newcombe, Richard and Lovegrove, Steven},
-title = {DeepSDF: Learning Continuous Signed Distance Functions for Shape Representation},
-booktitle = {The IEEE Conference on Computer Vision and Pattern Recognition (CVPR)},
-month = {June},
-year = {2019}
-}
-```
+This is an implementation of the paper "Deep Local Shapes: Learning Local SDF Priors for Detailed 3D Reconstruction" by Rohan Chabra, Jan E. Lenssen, Tanner Schmidt, Julian
+Straub, Steven Lovegrove, and Richard Newcombe. See the paper [here][6]. 
 
 ## File Organization
 
@@ -24,7 +12,7 @@ The various Python scripts assume a shared organizational structure such that th
 
 ##### Data Layout
 
-The DeepSDF code allows for pre-processing of meshes from multiple datasets and stores them in a unified data source. It also allows for separation of meshes according to class at the dataset level. The structure is as follows:
+The DeepLS code allows for pre-processing of meshes from multiple datasets and stores them in a unified data source. It also allows for separation of meshes according to class at the dataset level. The structure is as follows:
 
 ```
 <data_source_name>/
@@ -45,7 +33,7 @@ The file `datasources.json` stores a mapping from named datasets to paths indica
 
 ##### Experiment Layout
 
-Each DeepSDF experiment is organized in an "experiment directory", which collects all of the data relevant to a particular experiment. The structure is as follows:
+Each DeepLS experiment is organized in an "experiment directory", which collects all of the data relevant to a particular experiment. The structure is as follows:
 
 ```
 <experiment_name>/
@@ -72,11 +60,11 @@ Each DeepSDF experiment is organized in an "experiment directory", which collect
 
 The only file that is required to begin an experiment is 'specs.json', which sets the parameters, network architecture, and data to be used for the experiment.
 
-## How to Use DeepSDF
+## How to Use DeepLS
 
 ### Pre-processing the Data
 
-In order to use mesh data for training a DeepSDF model, the mesh will need to be pre-processed. This can be done with the `preprocess_data.py` executable. The preprocessing code is in C++ and has the following requirements:
+In order to use mesh data for training a DeepLS model, the mesh will need to be pre-processed. This can be done with the `preprocess_data.py` executable. The preprocessing code is in C++ and has the following requirements:
 
 - [CLI11][1]
 - [Pangolin][2]
@@ -97,7 +85,7 @@ cmake ..
 make -j
 ```
 
-Once this is done there should be two executables in the `DeepSDF/bin` directory, one for surface sampling and one for SDF sampling. With the binaries, the dataset can be preprocessed using `preprocess_data.py`.
+Once this is done there should be two executables in the `DeepLocalShapes/bin` directory, one for surface sampling and one for SDF sampling. With the binaries, the dataset can be preprocessed using `preprocess_data.py`.
 
 #### Preprocessing with Headless Rendering 
 
@@ -112,7 +100,7 @@ export PANGOLIN_WINDOW_URI=headless://
 Once data has been preprocessed, models can be trained using:
 
 ```
-python train_deep_sdf.py -e <experiment_directory>
+python train_deep_ls.py -e <experiment_directory>
 ```
 
 Parameters of training are stored in a "specification file" in the experiment directory, which (1) avoids proliferation of command line arguments and (2) allows for easy reproducibility. This specification file includes a reference to the data directory and a split file specifying which subset of the data to use for training.
@@ -129,7 +117,7 @@ By default, this will plot the loss but other values can be shown using the `--t
 
 ##### Continuing from a Saved Optimization State
 
-If training is interrupted, pass the `--continue` flag along with a epoch index to `train_deep_sdf.py` to continue from the saved state at that epoch. Note that the saved state needs to be present --- to check which checkpoints are available for a given experiment, check the `ModelParameters', 'OptimizerParameters', and 'LatentCodes' directories (all three are needed).
+If training is interrupted, pass the `--continue` flag along with a epoch index to `train_deep_ls.py` to continue from the saved state at that epoch. Note that the saved state needs to be present --- to check which checkpoints are available for a given experiment, check the `ModelParameters', 'OptimizerParameters', and 'LatentCodes' directories (all three are needed).
 
 ### Reconstructing Meshes
 
@@ -147,7 +135,7 @@ The current release does not include code for shape completion. Please check bac
 
 ### Evaluating Reconstructions
 
-Before evaluating a DeepSDF model, a second mesh preprocessing step is required to produce a set of points sampled from the surface of the test meshes. This can be done as with the sdf samples, but passing the `--surface` flag to the pre-processing script. Once this is done, evaluations are done using:
+Before evaluating a DeepLS model, a second mesh preprocessing step is required to produce a set of points sampled from the surface of the test meshes. This can be done as with the sdf samples, but passing the `--surface` flag to the pre-processing script. Once this is done, evaluations are done using:
 
 ```
 python evaluate.py -e <experiment_directory> -d <data_directory> --split <split_filename>
@@ -160,11 +148,11 @@ Given the stochastic nature of shape reconstruction (shapes are reconstructed vi
 
 ## Examples
 
-Here's a list of commands for a typical use case of training and evaluating a DeepSDF model using the "sofa" class of the ShapeNet version 2 dataset. 
+Here's a list of commands for a typical use case of training and evaluating a DeepLS model using the "sofa" class of the ShapeNet version 2 dataset. 
 
 ```
-# navigate to the DeepSdf root directory
-cd [...]/DeepSdf
+# navigate to the DeepLS root directory
+cd [...]/DeepLocalShapes
 
 # create a home for the data
 mkdir data
@@ -173,7 +161,7 @@ mkdir data
 python preprocess_data.py --data_dir data --source [...]/ShapeNetCore.v2/ --name ShapeNetV2 --split examples/splits/sv2_sofas_train.json --skip
 
 # train the model
-python train_deep_sdf.py -e examples/sofas
+python train_deep_ls.py -e examples/sofas
 
 # pre-process the sofa test set (SDF samples)
 python preprocess_data.py --data_dir data --source [...]/ShapeNetCore.v2/ --name ShapeNetV2 --split examples/splits/sv2_sofas_test.json --test --skip
@@ -188,17 +176,9 @@ python reconstruct.py -e examples/sofas -c 2000 --split examples/splits/sv2_sofa
 python evaluate.py -e examples/sofas -c 2000 -d data -s examples/splits/sv2_sofas_test.json 
 ```
 
-## Team
-
-Jeong Joon Park, Peter Florence, Julian Straub, Richard Newcombe, Steven Lovegrove
-
-## Acknowledgements
-
-We want to acknowledge the help of Tanner Schmidt with releasing the code.
-
 ## License
 
-DeepSDF is relased under the MIT License. See the [LICENSE file][5] for more details.
+DeepLS is relased under the MIT License. See the [LICENSE file][5] for more details.
 
-[5]: https://github.com/facebookresearch/DeepSDF/blob/master/LICENSE
-[6]: http://openaccess.thecvf.com/content_CVPR_2019/html/Park_DeepSDF_Learning_Continuous_Signed_Distance_Functions_for_Shape_Representation_CVPR_2019_paper.html
+[5]: https://github.com/Kamysek/DeepLocalShapes/blob/master/LICENSE
+[6]: https://arxiv.org/pdf/2003.10983.pdf 

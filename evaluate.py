@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-# Copyright 2004-present Facebook. All Rights Reserved.
+# Based on: https://github.com/facebookresearch/DeepSDF using MIT LICENSE (https://github.com/facebookresearch/DeepSDF/blob/master/LICENSE)
+# Copyright 2021-present Philipp Friedrich, Josef Kamysek. All Rights Reserved.
 
 import argparse
 import logging
@@ -8,8 +9,8 @@ import numpy as np
 import os
 import trimesh
 
-import deep_sdf
-import deep_sdf.workspace as ws
+import deep_ls
+import deep_ls.workspace as ws
 
 
 def evaluate(experiment_directory, checkpoint, data_dir, split_filename):
@@ -63,7 +64,7 @@ def evaluate(experiment_directory, checkpoint, data_dir, split_filename):
 
                 normalization_params = np.load(normalization_params_filename)
 
-                chamfer_dist = deep_sdf.metrics.chamfer.compute_trimesh_chamfer(
+                chamfer_dist = deep_ls.metrics.chamfer.compute_trimesh_chamfer(
                     ground_truth_points,
                     reconstruction,
                     normalization_params["offset"],
@@ -89,7 +90,7 @@ def evaluate(experiment_directory, checkpoint, data_dir, split_filename):
 
 if __name__ == "__main__":
 
-    arg_parser = argparse.ArgumentParser(description="Evaluate a DeepSDF autodecoder")
+    arg_parser = argparse.ArgumentParser(description="Evaluate a DeepLS autodecoder")
     arg_parser.add_argument(
         "--experiment",
         "-e",
@@ -120,11 +121,11 @@ if __name__ == "__main__":
         help="The split to evaluate.",
     )
 
-    deep_sdf.add_common_args(arg_parser)
+    deep_ls.add_common_args(arg_parser)
 
     args = arg_parser.parse_args()
 
-    deep_sdf.configure_logging(args)
+    deep_ls.configure_logging(args)
 
     evaluate(
         args.experiment_directory,

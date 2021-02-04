@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-# Copyright 2004-present Facebook. All Rights Reserved.
+# Based on: https://github.com/facebookresearch/DeepSDF using MIT LICENSE (https://github.com/facebookresearch/DeepSDF/blob/master/LICENSE)
+# Copyright 2021-present Philipp Friedrich, Josef Kamysek. All Rights Reserved.
 
 import argparse
 import concurrent.futures
@@ -8,8 +9,8 @@ import logging
 import os
 import subprocess
 
-import deep_sdf
-import deep_sdf.workspace as ws
+import deep_ls
+import deep_ls.workspace as ws
 
 
 def filter_classes_glob(patterns, classes):
@@ -143,21 +144,21 @@ if __name__ == "__main__":
         + "Otherwise, the script will produce SDF samples for training.",
     )
 
-    deep_sdf.add_common_args(arg_parser)
+    deep_ls.add_common_args(arg_parser)
 
     args = arg_parser.parse_args()
 
-    deep_sdf.configure_logging(args)
+    deep_ls.configure_logging(args)
 
     additional_general_args = []
 
-    deepsdf_dir = os.path.dirname(os.path.abspath(__file__))
+    deepls_dir = os.path.dirname(os.path.abspath(__file__))
     if args.surface_sampling:
-        executable = os.path.join(deepsdf_dir, "bin/SampleVisibleMeshSurface")
+        executable = os.path.join(deepls_dir, "bin/SampleVisibleMeshSurface")
         subdir = ws.surface_samples_subdir
         extension = ".ply"
     else:
-        executable = os.path.join(deepsdf_dir, "bin/PreprocessMesh")
+        executable = os.path.join(deepls_dir, "bin/PreprocessMesh")
         subdir = ws.sdf_samples_subdir
         extension = ".npz"
 
@@ -218,7 +219,7 @@ if __name__ == "__main__":
                 continue
 
             try:
-                mesh_filename = deep_sdf.data.find_mesh_in_directory(shape_dir)
+                mesh_filename = deep_ls.data.find_mesh_in_directory(shape_dir)
 
                 specific_args = []
 
@@ -243,9 +244,9 @@ if __name__ == "__main__":
                     )
                 )
 
-            except deep_sdf.data.NoMeshFileError:
+            except deep_ls.data.NoMeshFileError:
                 logging.warning("No mesh found for instance " + instance_dir)
-            except deep_sdf.data.MultipleMeshFileError:
+            except deep_ls.data.MultipleMeshFileError:
                 logging.warning("Multiple meshes found for instance " + instance_dir)
 
     with concurrent.futures.ThreadPoolExecutor(

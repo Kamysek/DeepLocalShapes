@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-# Copyright 2004-present Facebook. All Rights Reserved.
+# Based on: https://github.com/facebookresearch/DeepSDF using MIT LICENSE (https://github.com/facebookresearch/DeepSDF/blob/master/LICENSE)
+# Copyright 2021-present Philipp Friedrich, Josef Kamysek. All Rights Reserved.
 
 import logging
 import matplotlib.pyplot as plt
 import numpy as np
 import os
 import torch
-import deep_sdf
-import deep_sdf.workspace as ws
+import deep_ls
+import deep_ls.workspace as ws
 
 
 def running_mean(x, N):
@@ -85,7 +86,7 @@ if __name__ == "__main__":
 
     import argparse
 
-    arg_parser = argparse.ArgumentParser(description="Plot DeepSDF training logs")
+    arg_parser = argparse.ArgumentParser(description="Plot DeepLS training logs")
     arg_parser.add_argument(
         "--experiment",
         "-e",
@@ -97,10 +98,10 @@ if __name__ == "__main__":
     )
     arg_parser.add_argument("--type", "-t", dest="type", default="loss")
 
-    deep_sdf.add_common_args(arg_parser)
+    deep_ls.add_common_args(arg_parser)
 
     args = arg_parser.parse_args()
 
-    deep_sdf.configure_logging(args)
+    deep_ls.configure_logging(args)
 
     load_logs(args.experiment_directory, args.type)
