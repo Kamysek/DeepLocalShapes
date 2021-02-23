@@ -79,6 +79,7 @@ def reconstruct(
             sdf_gt = torch.tanh(sdf_gt)
             transformed_sample = sdf_data[near_sample_indices[0], :3] - sdf_grid_indices[center_point_index] 
             transformed_sample.requires_grad = False
+            decoder.requires_grad = False
             code = code.expand(1, 125)
             code = code.repeat(transformed_sample.shape[0], 1)
             decoder_input = torch.cat([code, transformed_sample.cuda()], dim=1).float().cuda()

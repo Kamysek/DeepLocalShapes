@@ -44,12 +44,13 @@ def create_mesh(decoder, latent_vec, cube_size, box_size, filename, N=128, max_b
 
     samples.requires_grad = False
 
-    box_size = 1
-    grid_radius = (box_size * 2) / cube_size
+    # at the moment the corner points are predicted at max 8 times because of rouding error. 
+    grid_radius = ((box_size * 2) / cube_size) / 2 #- 0.000000001 
+    
 
     samples_counter = np.zeros((samples.shape[0], 1), dtype=np.int)
     sdf_tree = cKDTree(samples[:, 0:3])
-    sdf_grid_indices = deep_ls.data.generate_grid_center_indices(cube_size=cube_size, box_size=1)
+    sdf_grid_indices = deep_ls.data.generate_grid_center_indices(cube_size=cube_size, box_size=box_size)
     for center_point_index in tqdm(range(len(sdf_grid_indices))):
         near_sample_indices = sdf_tree.query_ball_point(x=[sdf_grid_indices[center_point_index]], r=grid_radius, p=np.inf) 
         num_sdf_samples = len(near_sample_indices[0])
@@ -105,7 +106,7 @@ def convert_sdf_samples_to_ply(
     start_time = time.time()
 
     numpy_3d_sdf_tensor = pytorch_3d_sdf_tensor.numpy()
-
+    
     verts, faces, normals, values = skimage.measure.marching_cubes_lewiner(
         numpy_3d_sdf_tensor, level=None, spacing=[voxel_size] * 3
     )
