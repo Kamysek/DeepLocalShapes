@@ -29,6 +29,7 @@ def reconstruct(
     num_samples=30000,
     lr=5e-4,
     l2reg=False,
+    save_intermediate=0
 ):
     def adjust_learning_rate(
         initial_lr, optimizer, num_iterations, decreased_by, adjust_lr_every
@@ -96,6 +97,15 @@ def reconstruct(
             logging.debug(latent.norm())
         loss_num = loss.cpu().data.numpy()
 
+        if save_intermediate > 0 and e % save_intermediate == 0:
+            logging.debug("Saving intermediate Reconstruction result.")
+            start = time.time()
+            with torch.no_grad():
+                deep_ls.mesh.create_mesh(
+                    decoder, latent, cube_size, box_size, mesh_filename, N=128, max_batch=int(2 ** 18)
+                )
+            logging.debug("Reconstruct intermediate result took: {} seconds.".format(time.time() - start))
+
     return loss_num, latent
 
 
@@ -146,6 +156,12 @@ if __name__ == "__main__":
         dest="skip",
         action="store_true",
         help="Skip meshes which have already been reconstructed.",
+    )
+    arg_parser.add_argument(
+        "--save_intermediate",
+        dest="save_intermediate",
+        default=0,
+        help="Save intermediate reconstructions each n steps. Deactivate with 0.",
     )
     deep_ls.add_common_args(arg_parser)
 
@@ -281,6 +297,7 @@ if __name__ == "__main__":
                 num_samples=8000,
                 lr=5e-3,
                 l2reg=True,
+                save_intermediate=int(args.save_intermediate)
             )
             logging.debug("reconstruct time: {}".format(time.time() - start))
             err_sum += err
