@@ -52,18 +52,22 @@ def create_mesh(decoder, latent_vec, cube_size, box_size, filename, N=128, max_b
     sdf_tree = cKDTree(samples[:, 0:3])
     sdf_grid_indices = deep_ls.data.generate_grid_center_indices(cube_size=cube_size, box_size=box_size)
     for center_point_index in tqdm(range(len(sdf_grid_indices))):
-        near_sample_indices = sdf_tree.query_ball_point(x=[sdf_grid_indices[center_point_index]], r=grid_radius, p=np.inf) 
-        num_sdf_samples = len(near_sample_indices[0])
+        sample_indices_to_set = sdf_tree.query_ball_point(x=[sdf_grid_indices[center_point_index]], r=grid_radius, p=np.inf) 
+        num_sdf_samples = len(sample_indices_to_set[0])
         if num_sdf_samples < 1: 
             continue
+        near_sample_indices = sdf_tree.query_ball_point(x=[sdf_grid_indices[center_point_index]], r=grid_radius*1.5, p=np.inf)
         near_sample_indices = near_sample_indices[0]
+        sample_indices_to_set = sample_indices_to_set[0]
         code = latent_vec[center_point_index].cuda()
         transformed_sample = samples[near_sample_indices, 0:3] - sdf_grid_indices[center_point_index] 
         code = code.expand(1, 125)
         code = code.repeat(transformed_sample.shape[0], 1)
         decoder_input = torch.cat([code, transformed_sample.cuda()], dim=1).float().cuda()
-        samples[near_sample_indices, 3] = decoder(decoder_input).squeeze(1).detach().cpu()
-        samples_counter[near_sample_indices, 0] += 1
+        decoder_output = decoder(decoder_input).squeeze(1).detach().cpu()
+        decoder_output = decoder_output[np.in1d(near_sample_indices, sample_indices_to_set)]
+        samples[sample_indices_to_set, 3] = decoder_output
+        samples_counter[sample_indices_to_set, 0] += 1
     
     logging.debug("Max count for a single sample is {}".format(max(samples_counter)[0]))
     logging.debug("In total {} samples are touched at least twice.".format(len(np.where(samples_counter>1)[0])))
