@@ -9,12 +9,57 @@ import os
 import random
 import time
 import torch
-
+import functools
 import deep_ls
 import deep_ls.workspace as ws
 
+import torch.multiprocessing as mp
 from scipy.spatial import cKDTree
 import numpy as np
+
+
+def trainer(center_point, sdf_tree, sdf_grid_radius, latent, sdf_data, sdf_grid_indices, loss_sum, loss_lock, decoder, loss_l1, l2reg):
+    
+    loss = 0.0
+
+    near_sample_indices = sdf_tree.query_ball_point(x=[center_point[1]], r=sdf_grid_radius, p=np.inf) 
+    
+    num_sdf_samples = len(near_sample_indices[0])
+    
+    if num_sdf_samples < 1: 
+        return
+    
+    code = latent[center_point[0]].cuda()
+
+    sdf_gt = sdf_data[near_sample_indices[0], 3].unsqueeze(1)
+
+    sdf_gt = torch.tanh(sdf_gt)
+
+    transformed_sample = sdf_data[near_sample_indices[0], :3] - sdf_grid_indices[center_point[0]] 
+    
+    transformed_sample.requires_grad = False
+    
+    decoder.requires_grad = False
+    
+    code = code.expand(1, 125)
+    
+    code = code.repeat(transformed_sample.shape[0], 1)
+    
+    decoder_input = torch.cat([code, transformed_sample.cuda()], dim=1).float().cuda()
+
+    pred_sdf = decoder(decoder_input)
+    
+    loss += loss_l1(pred_sdf, sdf_gt.cuda()) / len(sdf_grid_indices)
+
+    if l2reg:
+        loss += 1e-4 * torch.mean(latent.pow(2))
+       
+    loss.backward()
+
+    with loss_lock:
+        loss_sum.value += loss
+        return
+
 
 def reconstruct(
     decoder,
@@ -25,7 +70,6 @@ def reconstruct(
     voxel_radius,
     test_sdf,
     stat,
-    clamp_dist,
     num_samples=30000,
     lr=5e-4,
     l2reg=False,
@@ -60,41 +104,57 @@ def reconstruct(
     for e in range(num_iterations):
 
         decoder.eval()
+
         sdf_data = deep_ls.data.unpack_sdf_samples_from_ram(
             test_sdf, num_samples
         )
+
         xyz = sdf_data[:, 0:3]
-        #sdf_tree = KDTree(xyz, metric="chebyshev", leaf_size=40)
+    
         sdf_tree = cKDTree(xyz)
+
         adjust_learning_rate(lr, optimizer, e, decreased_by, adjust_lr_every)
+
         optimizer.zero_grad()
-        loss = 0.0
-        for center_point_index in range(len(sdf_grid_indices)):
-            #near_sample_indices = sdf_tree.query_radius([sdf_grid_indices[center_point_index]], sdf_grid_radius)
-            near_sample_indices = sdf_tree.query_ball_point(x=[sdf_grid_indices[center_point_index]], r=sdf_grid_radius, p=np.inf) 
-            num_sdf_samples = len(near_sample_indices[0])
-            if num_sdf_samples < 1: 
-                continue
-            code = latent[center_point_index].cuda()
-            sdf_gt = sdf_data[near_sample_indices[0], 3].unsqueeze(1)
-            sdf_gt = torch.tanh(sdf_gt)
-            transformed_sample = sdf_data[near_sample_indices[0], :3] - sdf_grid_indices[center_point_index] 
-            transformed_sample.requires_grad = False
-            decoder.requires_grad = False
-            code = code.expand(1, 125)
-            code = code.repeat(transformed_sample.shape[0], 1)
-            decoder_input = torch.cat([code, transformed_sample.cuda()], dim=1).float().cuda()
-            pred_sdf = decoder(decoder_input)
-            loss += loss_l1(pred_sdf, sdf_gt.cuda()) / len(sdf_grid_indices)
-        if l2reg:
-            loss += 1e-4 * torch.mean(latent.pow(2))
-        loss.backward()
+        
+        if __name__ == '__main__': 
+            # Shared value counter and lock
+            mp.set_start_method('spawn', force=True)
+            manager = mp.Manager()
+            loss_sum = manager.Value('f', 0)
+            loss_lock = manager.Lock()
+            
+            # Create Pool for multiprocessing
+            start = time.time()
+            pool = mp.Pool()
+
+            # Apply map on array of center points
+            res = pool.map(functools.partial(trainer,                                
+                            sdf_tree = sdf_tree, 
+                            sdf_grid_radius = sdf_grid_radius,
+                            latent = latent, 
+                            sdf_data = sdf_data, 
+                            sdf_grid_indices = sdf_grid_indices, 
+                            loss_sum = loss_sum, 
+                            loss_lock = loss_lock, 
+                            decoder = decoder, 
+                            loss_l1 = loss_l1), 
+                            enumerate(sdf_grid_indices))
+
+            pool.close()
+            pool.join()
+
+            logging.info("Multiprocessing Time {}".format(time.time() - start))
+
+        loss = loss_sum
+       
         optimizer.step()
 
         if e % 1 == 0:
             logging.debug(loss.cpu().data.numpy())
             logging.debug(e)
             logging.debug(latent.norm())
+
         loss_num = loss.cpu().data.numpy()
 
         if save_intermediate > 0 and e % save_intermediate == 0:
@@ -293,7 +353,6 @@ if __name__ == "__main__":
                 voxel_radius,
                 data_sdf,
                 0.01,  # [emp_mean,emp_var],
-                0.1,
                 num_samples=8000,
                 lr=5e-3,
                 l2reg=True,
