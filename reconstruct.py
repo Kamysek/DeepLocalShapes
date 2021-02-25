@@ -49,7 +49,7 @@ def trainer(center_point, sdf_tree, sdf_grid_radius, latent, sdf_data, sdf_grid_
 
     pred_sdf = decoder(decoder_input)
     
-    loss += loss_l1(pred_sdf, sdf_gt.cuda()) / len(sdf_grid_indices)
+    loss += loss_l1(pred_sdf, sdf_gt.cuda()) / num_sdf_samples
 
     if l2reg:
         loss += 1e-4 * torch.mean(latent.pow(2))
@@ -57,7 +57,7 @@ def trainer(center_point, sdf_tree, sdf_grid_radius, latent, sdf_data, sdf_grid_
     loss.backward()
 
     with loss_lock:
-        loss_sum.value += loss
+        loss_sum.value += loss.item()
         return
 
 
@@ -86,7 +86,7 @@ def reconstruct(
     adjust_lr_every = int(num_iterations / 2)
 
     sdf_grid_indices = deep_ls.data.generate_grid_center_indices(cube_size=cube_size, box_size=box_size)
-    sdf_grid_radius = voxel_radius * ((box_size * 2) / cube_size)
+    sdf_grid_radius = (voxel_radius * ((box_size * 2) / cube_size)) / 2
 
     if type(stat) == type(0.1):
         latent = torch.ones(len(sdf_grid_indices), latent_size).normal_(mean=0, std=stat).cuda()
@@ -138,7 +138,8 @@ def reconstruct(
                             loss_sum = loss_sum, 
                             loss_lock = loss_lock, 
                             decoder = decoder, 
-                            loss_l1 = loss_l1), 
+                            loss_l1 = loss_l1,
+                            l2reg = l2reg), 
                             enumerate(sdf_grid_indices))
 
             pool.close()
@@ -151,11 +152,11 @@ def reconstruct(
         optimizer.step()
 
         if e % 1 == 0:
-            logging.debug(loss.cpu().data.numpy())
+            logging.debug(loss)
             logging.debug(e)
             logging.debug(latent.norm())
 
-        loss_num = loss.cpu().data.numpy()
+        loss_num = loss
 
         if save_intermediate > 0 and e % save_intermediate == 0:
             logging.debug("Saving intermediate Reconstruction result.")
