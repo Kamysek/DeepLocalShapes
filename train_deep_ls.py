@@ -258,11 +258,11 @@ def trainer(center_point, sdf_tree, sdf_grid_radius, lat_vecs, sdf_data, indices
        return
     
     # Extract code from lat_vecs
-    code = lat_vecs((center_point[0] + indices[0].cuda() * (cube_size**3)).long()).cuda()
-    
+    code = lat_vecs((center_point[0] + indices[0].cuda() * (cube_size**3)))
+
     # Get groundtruth sdf value
     sdf_gt = sdf_data[near_sample_indices[0], 3].unsqueeze(1)
-    sdf_gt = torch.tanh(sdf_gt)
+    sdf_gt = torch.tanh(sdf_gt).cuda()
     
     transformed_sample = sdf_data[near_sample_indices[0], :3] - center_point[1]
     transformed_sample.requires_grad = False
@@ -270,13 +270,13 @@ def trainer(center_point, sdf_tree, sdf_grid_radius, lat_vecs, sdf_data, indices
     code = code.expand(1, 125)
     code = code.repeat(transformed_sample.shape[0], 1)
     
-    decoder_input = torch.cat([code, transformed_sample.cuda()], dim=1).float().cuda()
+    decoder_input = torch.cat([code, transformed_sample.cuda()], dim=1).float()
     
     # Get network prediction of current sample
     pred_sdf = decoder(decoder_input) 
     
     # f_theta - s_j
-    inner_sum = loss_l1(pred_sdf.squeeze(0), sdf_gt.cuda()) / num_sdf_samples
+    inner_sum = loss_l1(pred_sdf, sdf_gt) / num_sdf_samples
 
     # Right most part of formula (4) in DeepLS ->  + 1/sigma^2 L2(z_i)
     if do_code_regularization and num_sdf_samples != 0:
@@ -395,7 +395,7 @@ def main_function(experiment_directory, continue_from, batch_split):
 
     # voxel_radius is defined as 1.5 times the voxel side length (see DeepLS sec. 4.1) since that value provides
     # a good trade of between accuracy and efficiency
-    sdf_grid_radius = voxel_radius * ((box_size * 2) / cube_size)
+    sdf_grid_radius = voxel_radius * (((box_size * 2) / cube_size) / 2)
 
     logging.debug("torch num_threads: {}".format(torch.get_num_threads()))
 
