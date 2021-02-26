@@ -360,7 +360,7 @@ if __name__ == "__main__":
                 save_intermediate=int(args.save_intermediate)
             )
             logging.debug("reconstruct time: {}".format(time.time() - start))
-            err_sum += err
+            err_sum += err.item()
             logging.debug("current_error avg: {}".format((err_sum / (ii + 1))))
             logging.debug(ii)
 
