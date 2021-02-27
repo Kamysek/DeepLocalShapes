@@ -86,7 +86,7 @@ def reconstruct(
     adjust_lr_every = int(num_iterations / 2)
 
     sdf_grid_indices = deep_ls.data.generate_grid_center_indices(cube_size=cube_size, box_size=box_size)
-    sdf_grid_radius = (voxel_radius * ((box_size * 2) / cube_size)) / 2
+    sdf_grid_radius = voxel_radius * (((box_size * 2) / cube_size) / 2)
 
     if type(stat) == type(0.1):
         latent = torch.ones(len(sdf_grid_indices), latent_size).normal_(mean=0, std=stat).cuda()
@@ -101,9 +101,12 @@ def reconstruct(
     loss_num = 0
     loss_l1 = torch.nn.L1Loss()
 
+    batch_size = 4096
+
     for e in range(num_iterations):
 
         decoder.eval()
+        decoder.requires_grad = False
 
         sdf_data = deep_ls.data.unpack_sdf_samples_from_ram(
             test_sdf, num_samples
@@ -117,41 +120,45 @@ def reconstruct(
 
         optimizer.zero_grad()
         
-        if __name__ == '__main__': 
-            # Shared value counter and lock
-            mp.set_start_method('spawn', force=True)
-            manager = mp.Manager()
-            loss_sum = manager.Value('f', 0)
-            loss_lock = manager.Lock()
-            
-            # Create Pool for multiprocessing
-            start = time.time()
-            pool = mp.Pool()
-
-            # Apply map on array of center points
-            res = pool.map(functools.partial(trainer,                                
-                            sdf_tree = sdf_tree, 
-                            sdf_grid_radius = sdf_grid_radius,
-                            latent = latent, 
-                            sdf_data = sdf_data, 
-                            sdf_grid_indices = sdf_grid_indices, 
-                            loss_sum = loss_sum, 
-                            loss_lock = loss_lock, 
-                            decoder = decoder, 
-                            loss_l1 = loss_l1,
-                            l2reg = l2reg), 
-                            enumerate(sdf_grid_indices))
-
-            pool.close()
-            pool.join()
-
-            logging.info("Multiprocessing Time {}".format(time.time() - start))
-
-        loss = loss_sum
-       
+        loss = 0.0
+        batches_checked = 0
+        batches_used_total = 0
+        for center_point_index in range(0, len(sdf_grid_indices), batch_size):
+            batches_used = 0
+            inputs = []
+            sdf_gts = []
+            for batch in range(batch_size):
+                index = center_point_index + batch
+                batches_checked += 1
+                #near_sample_indices = sdf_tree.query_radius([sdf_grid_indices[center_point_index]], sdf_grid_radius)
+                near_sample_indices = sdf_tree.query_ball_point(x=[sdf_grid_indices[index]], r=sdf_grid_radius, p=np.inf) 
+                num_sdf_samples = len(near_sample_indices[0])
+                if num_sdf_samples < 1: 
+                    continue
+                sdf_gt = sdf_data[near_sample_indices[0], 3].unsqueeze(1)
+                sdf_gts.append(torch.tanh(sdf_gt))
+                transformed_sample = sdf_data[near_sample_indices[0], :3] - sdf_grid_indices[index] 
+                transformed_sample.requires_grad = False
+                
+                code = latent[index].cuda()
+                code = code.expand(1, 125)
+                code = code.repeat(transformed_sample.shape[0], 1)
+                inputs.append(torch.cat([code, transformed_sample.cuda()], dim=1).float().cuda())
+                batches_used += 1
+            if len(inputs) < 1:
+                continue
+            decoder_input = torch.cat(inputs, dim=0)
+            pred_sdf = decoder(decoder_input)
+            sdf_gt = torch.cat(sdf_gts, dim=0)
+            loss += loss_l1(pred_sdf, sdf_gt.cuda()) / decoder_input.shape[0]
+            batches_used_total += batches_used
+        if l2reg:
+            loss += 1e-4 * torch.mean(latent.pow(2))
+        loss.backward()
         optimizer.step()
 
         if e % 1 == 0:
+            logging.debug("Batches used: {} / checked {}".format(batches_used_total, batches_checked))
             logging.debug(loss)
             logging.debug(e)
             logging.debug(latent.norm())
@@ -356,7 +363,7 @@ if __name__ == "__main__":
                 0.01,  # [emp_mean,emp_var],
                 num_samples=8000,
                 lr=5e-3,
-                l2reg=True,
+                l2reg=False,
                 save_intermediate=int(args.save_intermediate)
             )
             logging.debug("reconstruct time: {}".format(time.time() - start))

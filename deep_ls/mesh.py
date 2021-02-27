@@ -24,7 +24,7 @@ def create_mesh(decoder, latent_vec, cube_size, box_size, filename, N=128, max_b
     decoder.eval()
 
     # NOTE: the voxel_origin is actually the (bottom, left, down) corner, not the middle
-    voxel_origin = [-2, -2, -2]
+    voxel_origin = [-1, -1, -1]
     voxel_size = 2.0 / (N - 1)
 
     overall_index = torch.arange(0, N ** 3, 1, out=torch.LongTensor())
@@ -38,10 +38,14 @@ def create_mesh(decoder, latent_vec, cube_size, box_size, filename, N=128, max_b
 
     # transform first 3 columns
     # to be the x, y, z coordinate
-    samples[:, 0] = (samples[:, 0] * 1.98 * voxel_size) + voxel_origin[2]
-    samples[:, 1] = (samples[:, 1] * 1.98 * voxel_size) + voxel_origin[1]
-    samples[:, 2] = (samples[:, 2] * 1.98 * voxel_size) + voxel_origin[0]    
+    # samples[:, 0] = (samples[:, 0] * 1.98 * voxel_size) + voxel_origin[2]
+    # samples[:, 1] = (samples[:, 1] * 1.98 * voxel_size) + voxel_origin[1]
+    # samples[:, 2] = (samples[:, 2] * 1.98 * voxel_size) + voxel_origin[0]    
+    samples[:, 0] = (samples[:, 0] * voxel_size) + voxel_origin[2]
+    samples[:, 1] = (samples[:, 1] * voxel_size) + voxel_origin[1]
+    samples[:, 2] = (samples[:, 2] * voxel_size) + voxel_origin[0]    
     
+
     samples.requires_grad = False
 
     # at the moment the corner points are predicted at max 8 times because of rouding error. 
@@ -53,13 +57,15 @@ def create_mesh(decoder, latent_vec, cube_size, box_size, filename, N=128, max_b
     sdf_grid_indices = deep_ls.data.generate_grid_center_indices(cube_size=cube_size, box_size=box_size)
     for center_point_index in tqdm(range(len(sdf_grid_indices))):
         sample_indices_to_set = sdf_tree.query_ball_point(x=[sdf_grid_indices[center_point_index]], r=grid_radius, p=np.inf) 
-        num_sdf_samples = len(sample_indices_to_set[0])
-        if num_sdf_samples < 1: 
+        sample_indices_to_set = sample_indices_to_set[0]
+        if len(sample_indices_to_set) < 1: 
+            # TODO check what should happen to indices that are not set?
+            #samples[sample_indices_to_set, 3] = 0
             continue
         near_sample_indices = sdf_tree.query_ball_point(x=[sdf_grid_indices[center_point_index]], r=grid_radius*1.5, p=np.inf)
         near_sample_indices = near_sample_indices[0]
-        sample_indices_to_set = sample_indices_to_set[0]
         code = latent_vec[center_point_index].cuda()
+        """code = torch.from_numpy(latent_vec[center_point_index]).cuda()"""
         transformed_sample = samples[near_sample_indices, 0:3] - sdf_grid_indices[center_point_index] 
         code = code.expand(1, 125)
         code = code.repeat(transformed_sample.shape[0], 1)

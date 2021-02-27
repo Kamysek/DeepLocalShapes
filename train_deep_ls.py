@@ -534,7 +534,9 @@ def main_function(experiment_directory, continue_from, batch_split):
             outer_sum = 0.0
 
             optimizer_all.zero_grad()
-              
+            total_batches_used = 0
+            samples_used = 0
+            empty_grid_cells = 0
             for center_point_index in tqdm(range(0, len(sdf_grid_indices), batch_size)):
                 inner_sum = 0.0
                 inputs = []
@@ -548,7 +550,8 @@ def main_function(experiment_directory, continue_from, batch_split):
                     num_sdf_samples = len(near_sample_indices[0])
                     if num_sdf_samples < 1: 
                         continue
-
+                    
+                    samples_used += num_sdf_samples
                     sdf_gt = sdf_data[near_sample_indices[0], 3].unsqueeze(1)
                     sdf_gts.append(torch.tanh(sdf_gt))
 
@@ -561,12 +564,14 @@ def main_function(experiment_directory, continue_from, batch_split):
                     batches_used += 1
                 # Get network prediction of current sample
                 if len(inputs) < 1:
+                    empty_grid_cells += 1
                     continue
+                total_batches_used += batches_used
                 decoder_input = torch.cat(inputs, dim=0)
                 pred_sdf = decoder(decoder_input) 
                 # f_theta - s_j
                 sdf_gt = torch.cat(sdf_gts, dim=0)
-                inner_sum = loss_l1(pred_sdf.squeeze(0), sdf_gt.cuda()) / batches_used
+                inner_sum = loss_l1(pred_sdf.squeeze(0), sdf_gt.cuda()) / decoder_input.shape[0]
 
                 # Right most part of formula (4) in DeepLS ->  + 1/sigma^2 L2(z_i)
                 if do_code_regularization and num_sdf_samples != 0:
@@ -579,9 +584,10 @@ def main_function(experiment_directory, continue_from, batch_split):
                 inner_sum.backward()
 
                 outer_sum += inner_sum.item()
-
             scene_avg_loss += outer_sum
             logging.info("Scene {} loss = {}".format(current_scene, outer_sum))
+            logging.info("Total batches used {} total samples {}".format(total_batches_used, samples_used))
+            logging.info("Empty grid cells {}".format(empty_grid_cells))
 
             loss_log.append(outer_sum)
 
@@ -613,6 +619,17 @@ def main_function(experiment_directory, continue_from, batch_split):
                 param_mag_log,
                 epoch,
             )
+        """
+        # FOR DEBUGGING ONLY!
+        logging.debug("Trying to reconstruct with trained model")
+        with torch.no_grad():
+            debug_file_name = "/home/philippgfriedrich/DeepLocalShapes/examples/sofas/Reconstructions/640/Meshes/ShapeNetV2/04256520/trained_1037fd31d12178d396f164a988ef37cc.ply"
+            lat_vec_mesh = np.array(lat_vecs.cpu().weight.data)
+            deep_ls.mesh.create_mesh(
+                decoder, lat_vec_mesh, cube_size, box_size, debug_file_name, N=128, max_batch=int(2 ** 18)
+            )
+            logging.debug("total time: {}".format(time.time() - start))"""
+        
 
 if __name__ == "__main__":
     import argparse
