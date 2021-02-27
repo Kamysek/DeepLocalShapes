@@ -20,6 +20,8 @@ import torch.utils.data as data_utils
 from scipy.spatial import cKDTree
 import numpy as np
 
+from tqdm import tqdm
+
 if not sys.warnoptions:
     warnings.simplefilter("ignore")
 
@@ -498,7 +500,6 @@ def main_function(experiment_directory, continue_from, batch_split):
 
     for epoch in range(start_epoch, num_epochs + 1):
 
-        start = time.time()
 
         logging.info("epoch {}...".format(epoch))
 
@@ -510,6 +511,9 @@ def main_function(experiment_directory, continue_from, batch_split):
         scene_avg_loss = 0.0
         len_data_loader = len(sdf_loader)
 
+        batch_size = 4096
+
+        start = time.time()
 
         for sdf_data, indices in sdf_loader:
             current_scene += 1
@@ -531,46 +535,58 @@ def main_function(experiment_directory, continue_from, batch_split):
 
             optimizer_all.zero_grad()
               
-            if __name__ == '__main__': 
-                # Shared value counter and lock
-                mp.set_start_method('spawn', force=True)
-                manager = mp.Manager()
-                outer_sum = manager.Value('f', 0)
-                outer_lock = manager.Lock()
-                
-                # Create Pool for multiprocessing
-                start = time.time()
-                pool = mp.Pool()
+            for center_point_index in tqdm(range(0, len(sdf_grid_indices), batch_size)):
+                inner_sum = 0.0
+                inputs = []
+                sdf_gts = []
+                batches_used = 0
+                for batch in range(batch_size):
+                    index = center_point_index + batch
+                    # Get all indices of the samples that are within the L-radius around the cell center.
+                    near_sample_indices = sdf_tree.query_ball_point(x=[sdf_grid_indices[index]], r=sdf_grid_radius, p=np.inf)
+                    # Get number of samples located samples within the L-radius around the cell center
+                    num_sdf_samples = len(near_sample_indices[0])
+                    if num_sdf_samples < 1: 
+                        continue
 
-                # Apply map on array of center points
-                res = pool.map(functools.partial(trainer, 
-                                sdf_tree = sdf_tree, 
-                                sdf_grid_radius = sdf_grid_radius,
-                                lat_vecs = lat_vecs, 
-                                sdf_data = sdf_data, 
-                                indices = indices, 
-                                cube_size = cube_size, 
-                                outer_sum = outer_sum, 
-                                outer_lock = outer_lock, 
-                                decoder = decoder, 
-                                loss_l1 = loss_l1, 
-                                do_code_regularization = do_code_regularization, 
-                                code_reg_lambda = code_reg_lambda, 
-                                epoch = epoch), 
-                                enumerate(sdf_grid_indices))
+                    sdf_gt = sdf_data[near_sample_indices[0], 3].unsqueeze(1)
+                    sdf_gts.append(torch.tanh(sdf_gt))
 
-                pool.close()
-                pool.join()
+                    transformed_sample = sdf_data[near_sample_indices[0], :3] - sdf_grid_indices[index] 
+                    transformed_sample.requires_grad = False
+                    code = lat_vecs((index + indices[0].cuda() * (cube_size**3)).long()).cuda()
+                    code = code.expand(1, 125)
+                    code = code.repeat(transformed_sample.shape[0], 1)
+                    inputs.append(torch.cat([code, transformed_sample.cuda()], dim=1).float().cuda())
+                    batches_used += 1
+                # Get network prediction of current sample
+                if len(inputs) < 1:
+                    continue
+                decoder_input = torch.cat(inputs, dim=0)
+                pred_sdf = decoder(decoder_input) 
+                # f_theta - s_j
+                sdf_gt = torch.cat(sdf_gts, dim=0)
+                inner_sum = loss_l1(pred_sdf.squeeze(0), sdf_gt.cuda()) / batches_used
 
-                logging.info("Multiprocessing Time {}".format(time.time() - start))
+                # Right most part of formula (4) in DeepLS ->  + 1/sigma^2 L2(z_i)
+                if do_code_regularization and num_sdf_samples != 0:
+                    l2_size_loss = torch.sum(torch.norm(code, dim=0))
 
-            scene_avg_loss += outer_sum.value
+                    reg_loss = (code_reg_lambda * min(1.0, epoch / 100) * l2_size_loss) / batches_used
+
+                    inner_sum = inner_sum.cuda() + reg_loss.cuda()
+
+                inner_sum.backward()
+
+                outer_sum += inner_sum.item()
+
+            scene_avg_loss += outer_sum
             logging.info("Scene {} loss = {}".format(current_scene, outer_sum))
 
-            loss_log.append(outer_sum.value)
+            loss_log.append(outer_sum)
 
             optimizer_all.step()
-                    
+        logging.info("Epoch took {} seconds".format(time.time()-start))            
         logging.info("Epoch scene average loss: {}".format((scene_avg_loss/current_scene)))
         end = time.time()
         seconds_elapsed = end - start
