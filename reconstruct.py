@@ -91,6 +91,14 @@ def reconstruct(
             logging.debug(loss.cpu().data.numpy())
             logging.debug(e)
             logging.debug(latent.norm())
+        if e > 0 and e % 50 == 0:
+            logging.debug("SAVING INTERMEDIATE RESULTS to: {}".format(mesh_filename))
+            start = time.time()
+            with torch.no_grad():
+                deep_sdf.mesh.create_mesh(
+                    decoder, latent, cube_size, box_size, mesh_filename, N=128, max_batch=int(2 ** 18)
+                )
+            logging.debug("Saving tookl time: {}".format(time.time() - start))
         loss_num = loss.cpu().data.numpy()
 
     return loss_num, latent

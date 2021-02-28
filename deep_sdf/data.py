@@ -93,7 +93,7 @@ def unpack_sdf_samples(filename, subsample=None):
 
 def generate_grid_center_indices(cube_size=50, box_size=2):
     # Divide space into equally spaced subspaces and calculate center position of subspace
-    voxel_centers = np.linspace(-box_size, box_size, cube_size, endpoint=False)
+    voxel_centers = np.linspace(-box_size, box_size, cube_size, endpoint=False, dtype=np.float)
     voxel_centers += box_size / cube_size
 
     # Create grid indices

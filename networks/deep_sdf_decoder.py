@@ -68,7 +68,7 @@ class Decoder(nn.Module):
         self.use_tanh = use_tanh # false
         if use_tanh:
             self.tanh = nn.Tanh()
-        self.relu = nn.ReLU()
+        self.relu = nn.LeakyReLU()
 
         self.dropout_prob = dropout_prob
         self.dropout = dropout
@@ -114,7 +114,8 @@ class Decoder(nn.Module):
                     x = F.dropout(x, p=self.dropout_prob, training=self.training)
 
         # TODO is this a tanh duplicate?
-        if hasattr(self, "th"):
-            x = self.th(x)
+        #if hasattr(self, "th"):
+            
+        x = self.th(x)
 
         return x
