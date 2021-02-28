@@ -9,56 +9,12 @@ import os
 import random
 import time
 import torch
-import functools
 import deep_ls
 import deep_ls.workspace as ws
 
 import torch.multiprocessing as mp
 from scipy.spatial import cKDTree
 import numpy as np
-
-
-def trainer(center_point, sdf_tree, sdf_grid_radius, latent, sdf_data, sdf_grid_indices, loss_sum, loss_lock, decoder, loss_l1, l2reg):
-    
-    loss = 0.0
-
-    near_sample_indices = sdf_tree.query_ball_point(x=[center_point[1]], r=sdf_grid_radius, p=np.inf) 
-    
-    num_sdf_samples = len(near_sample_indices[0])
-    
-    if num_sdf_samples < 1: 
-        return
-    
-    code = latent[center_point[0]].cuda()
-
-    sdf_gt = sdf_data[near_sample_indices[0], 3].unsqueeze(1)
-
-    sdf_gt = torch.tanh(sdf_gt)
-
-    transformed_sample = sdf_data[near_sample_indices[0], :3] - sdf_grid_indices[center_point[0]] 
-    
-    transformed_sample.requires_grad = False
-    
-    decoder.requires_grad = False
-    
-    code = code.expand(1, 125)
-    
-    code = code.repeat(transformed_sample.shape[0], 1)
-    
-    decoder_input = torch.cat([code, transformed_sample.cuda()], dim=1).float().cuda()
-
-    pred_sdf = decoder(decoder_input)
-    
-    loss += loss_l1(pred_sdf, sdf_gt.cuda()) / num_sdf_samples
-
-    if l2reg:
-        loss += 1e-4 * torch.mean(latent.pow(2))
-       
-    loss.backward()
-
-    with loss_lock:
-        loss_sum.value += loss.item()
-        return
 
 
 def reconstruct(
@@ -106,13 +62,12 @@ def reconstruct(
     for e in range(num_iterations):
 
         decoder.eval()
-        decoder.requires_grad = False
 
         sdf_data = deep_ls.data.unpack_sdf_samples_from_ram(
             test_sdf, num_samples
         )
 
-        xyz = sdf_data[:, 0:3]
+        xyz = sdf_data[:, 0:3].detach().cpu().numpy()
     
         sdf_tree = cKDTree(xyz)
 
@@ -132,12 +87,12 @@ def reconstruct(
                 batches_checked += 1
                 #near_sample_indices = sdf_tree.query_radius([sdf_grid_indices[center_point_index]], sdf_grid_radius)
                 near_sample_indices = sdf_tree.query_ball_point(x=[sdf_grid_indices[index]], r=sdf_grid_radius, p=np.inf) 
-                num_sdf_samples = len(near_sample_indices[0])
-                if num_sdf_samples < 1: 
+                near_sample_indices = near_sample_indices[0]
+                if len(near_sample_indices) < 1: 
                     continue
-                sdf_gt = sdf_data[near_sample_indices[0], 3].unsqueeze(1)
+                sdf_gt = sdf_data[near_sample_indices, 3].unsqueeze(1)
                 sdf_gts.append(torch.tanh(sdf_gt))
-                transformed_sample = sdf_data[near_sample_indices[0], :3] - sdf_grid_indices[index] 
+                transformed_sample = sdf_data[near_sample_indices, :3] - sdf_grid_indices[index] 
                 transformed_sample.requires_grad = False
                 
                 code = latent[index].cuda()
@@ -150,17 +105,17 @@ def reconstruct(
             decoder_input = torch.cat(inputs, dim=0)
             pred_sdf = decoder(decoder_input)
             sdf_gt = torch.cat(sdf_gts, dim=0)
-            inner_sum = loss_l1(pred_sdf, sdf_gt.cuda()) / decoder_input.shape[0]
+            loss += loss_l1(pred_sdf, sdf_gt.cuda()) / decoder_input.shape[0]
             batches_used_total += batches_used
-            if l2reg:
-                loss += 1e-4 * torch.mean(latent.pow(2))
-            loss.backward()
+        if l2reg:
+            loss += 1e-4 * torch.mean(latent.pow(2))
+        loss.backward()
         
         optimizer.step()
 
         if e % 1 == 0:
             logging.debug("Batches used: {} / checked {}".format(batches_used_total, batches_checked))
-            logging.debug(loss)
+            logging.debug(loss.cpu().data.numpy())
             logging.debug(e)
             logging.debug(latent.norm())
 

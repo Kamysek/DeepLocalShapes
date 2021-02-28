@@ -2,7 +2,6 @@
 # Based on: https://github.com/facebookresearch/DeepSDF using MIT LICENSE (https://github.com/facebookresearch/DeepSDF/blob/master/LICENSE)
 # Copyright 2021-present Philipp Friedrich, Josef Kamysek. All Rights Reserved.
 
-from json import decoder
 import logging
 from random import sample
 import numpy as np
@@ -38,9 +37,6 @@ def create_mesh(decoder, latent_vec, cube_size, box_size, filename, N=128, max_b
 
     # transform first 3 columns
     # to be the x, y, z coordinate
-    # samples[:, 0] = (samples[:, 0] * 1.98 * voxel_size) + voxel_origin[2]
-    # samples[:, 1] = (samples[:, 1] * 1.98 * voxel_size) + voxel_origin[1]
-    # samples[:, 2] = (samples[:, 2] * 1.98 * voxel_size) + voxel_origin[0]    
     samples[:, 0] = (samples[:, 0] * voxel_size) + voxel_origin[2]
     samples[:, 1] = (samples[:, 1] * voxel_size) + voxel_origin[1]
     samples[:, 2] = (samples[:, 2] * voxel_size) + voxel_origin[0]    
@@ -48,32 +44,32 @@ def create_mesh(decoder, latent_vec, cube_size, box_size, filename, N=128, max_b
 
     samples.requires_grad = False
 
-    # at the moment the corner points are predicted at max 8 times because of rouding error. 
-    grid_radius = ((box_size * 2) / cube_size) / 2 #- 0.000000001 
+    grid_radius = ((box_size * 2) / cube_size) / 2
     
-
     samples_counter = np.zeros((samples.shape[0], 1), dtype=np.int)
-    sdf_tree = cKDTree(samples[:, 0:3])
+    
+    sdf_tree = cKDTree(samples[:, :3].detach().cpu().numpy())
     sdf_grid_indices = deep_ls.data.generate_grid_center_indices(cube_size=cube_size, box_size=box_size)
+    
     for center_point_index in tqdm(range(len(sdf_grid_indices))):
-        sample_indices_to_set = sdf_tree.query_ball_point(x=[sdf_grid_indices[center_point_index]], r=grid_radius, p=np.inf) 
-        sample_indices_to_set = sample_indices_to_set[0]
-        if len(sample_indices_to_set) < 1: 
+        near_sample_indices = sdf_tree.query_ball_point(x=[sdf_grid_indices[center_point_index]], r=grid_radius, p=np.inf) 
+        near_sample_indices = near_sample_indices[0]
+        if len(near_sample_indices) < 1: 
             # TODO check what should happen to indices that are not set?
             #samples[sample_indices_to_set, 3] = 0
             continue
-        near_sample_indices = sdf_tree.query_ball_point(x=[sdf_grid_indices[center_point_index]], r=grid_radius*1.5, p=np.inf)
-        near_sample_indices = near_sample_indices[0]
-        code = latent_vec[center_point_index].cuda()
+        
+        transformed_sample = samples[near_sample_indices, 0:3] - sdf_grid_indices[center_point_index]
+        # TODO check if requires_grad is needed:
+        transformed_sample.requires_grad = False
         """code = torch.from_numpy(latent_vec[center_point_index]).cuda()"""
-        transformed_sample = samples[near_sample_indices, 0:3] - sdf_grid_indices[center_point_index] 
+        code = latent_vec[center_point_index].cuda()
         code = code.expand(1, 125)
         code = code.repeat(transformed_sample.shape[0], 1)
         decoder_input = torch.cat([code, transformed_sample.cuda()], dim=1).float().cuda()
         decoder_output = decoder(decoder_input).squeeze(1).detach().cpu()
-        decoder_output = decoder_output[np.in1d(near_sample_indices, sample_indices_to_set)]
-        samples[sample_indices_to_set, 3] = decoder_output
-        samples_counter[sample_indices_to_set, 0] += 1
+        samples[near_sample_indices, 3] = decoder_output
+        samples_counter[near_sample_indices, 0] += 1
     
     logging.debug("Max count for a single sample is {}".format(max(samples_counter)[0]))
     logging.debug("In total {} samples are touched at least twice.".format(len(np.where(samples_counter>1)[0])))

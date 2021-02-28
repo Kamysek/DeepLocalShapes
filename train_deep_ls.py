@@ -548,15 +548,15 @@ def main_function(experiment_directory, continue_from, batch_split):
                     # Get all indices of the samples that are within the L-radius around the cell center.
                     near_sample_indices = sdf_tree.query_ball_point(x=[sdf_grid_indices[index]], r=sdf_grid_radius, p=np.inf)
                     # Get number of samples located samples within the L-radius around the cell center
-                    num_sdf_samples = len(near_sample_indices[0])
-                    if num_sdf_samples < 1: 
+                    near_sample_indices = near_sample_indices[0]
+                    if len(near_sample_indices) < 1: 
                         continue
                     
-                    samples_used += num_sdf_samples
-                    sdf_gt = sdf_data[near_sample_indices[0], 3].unsqueeze(1)
+                    samples_used += len(near_sample_indices)
+                    sdf_gt = sdf_data[near_sample_indices, 3].unsqueeze(1)
                     sdf_gts.append(torch.tanh(sdf_gt))
 
-                    transformed_sample = sdf_data[near_sample_indices[0], :3] - sdf_grid_indices[index] 
+                    transformed_sample = sdf_data[near_sample_indices, :3] - sdf_grid_indices[index] 
                     transformed_sample.requires_grad = False
                     code = lat_vecs((index + indices[0].cuda() * (cube_size**3)).long()).cuda()
                     code = code.expand(1, 125)
