@@ -150,11 +150,12 @@ def reconstruct(
             decoder_input = torch.cat(inputs, dim=0)
             pred_sdf = decoder(decoder_input)
             sdf_gt = torch.cat(sdf_gts, dim=0)
-            loss += loss_l1(pred_sdf, sdf_gt.cuda()) / decoder_input.shape[0]
+            inner_sum = loss_l1(pred_sdf, sdf_gt.cuda()) / decoder_input.shape[0]
             batches_used_total += batches_used
-        if l2reg:
-            loss += 1e-4 * torch.mean(latent.pow(2))
-        loss.backward()
+            if l2reg:
+                loss += 1e-4 * torch.mean(latent.pow(2))
+            loss.backward()
+        
         optimizer.step()
 
         if e % 1 == 0:

@@ -417,6 +417,7 @@ def main_function(experiment_directory, continue_from, batch_split):
         0.0,
         get_spec_with_default(specs, "CodeInitStdDev", 1.0) / math.sqrt(latent_size),
     )
+    lat_vecs.requires_grad = True
 
     logging.debug(
         "initialized with mean magnitude {}".format(
@@ -577,7 +578,7 @@ def main_function(experiment_directory, continue_from, batch_split):
                 if do_code_regularization and num_sdf_samples != 0:
                     l2_size_loss = torch.sum(torch.norm(code, dim=0))
 
-                    reg_loss = (code_reg_lambda * min(1.0, epoch / 100) * l2_size_loss) / batches_used
+                    reg_loss = (code_reg_lambda * min(1.0, epoch / 100) * l2_size_loss) / decoder_input.shape[0]
 
                     inner_sum = inner_sum.cuda() + reg_loss.cuda()
 
@@ -623,7 +624,7 @@ def main_function(experiment_directory, continue_from, batch_split):
         # FOR DEBUGGING ONLY!
         logging.debug("Trying to reconstruct with trained model")
         with torch.no_grad():
-            debug_file_name = "/home/philippgfriedrich/DeepLocalShapes/examples/sofas/Reconstructions/640/Meshes/ShapeNetV2/04256520/trained_1037fd31d12178d396f164a988ef37cc.ply"
+            debug_file_name = "/home/philippgfriedrich/DeepLocalShapes/examples/sofas/Reconstructions/2000/Meshes/ShapeNetV2/04256520/trained_1037fd31d12178d396f164a988ef37cc"
             lat_vec_mesh = np.array(lat_vecs.cpu().weight.data)
             deep_ls.mesh.create_mesh(
                 decoder, lat_vec_mesh, cube_size, box_size, debug_file_name, N=128, max_batch=int(2 ** 18)
