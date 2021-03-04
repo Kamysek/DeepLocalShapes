@@ -11,7 +11,7 @@ import signal
 import sys
 import time
 import warnings
-
+import time
 import deep_ls
 import deep_ls.workspace as ws
 import torch
@@ -236,7 +236,11 @@ def get_spec_with_default(specs, key, default):
 
 
 def get_mean_latent_vector_magnitude(latent_vectors):
-    return torch.mean(torch.norm(latent_vectors.weight.data.detach(), dim=1))
+    sum_for_mean = 0
+    for i in latent_vectors:
+        sum_for_mean += torch.mean(torch.norm(i.weight.data.detach(), dim=1)).item()
+
+    return sum_for_mean / len(latent_vectors)
 
 
 def append_parameter_magnitudes(param_mag_log, model):
@@ -358,11 +362,9 @@ def main_function(experiment_directory, continue_from, batch_split):
     code_reg_lambda = get_spec_with_default(specs, "CodeRegularizationLambda", 1e-4)
 
     code_bound = get_spec_with_default(specs, "CodeBound", None)
-
-    cube_size = get_spec_with_default(specs, "CubeSize", 50)
-
-    box_size = get_spec_with_default(specs, "BoxSize", 2)
-
+    
+    cube_size = get_spec_with_default(specs, "CubeSize", 30)
+    box_size = get_spec_with_default(specs, "BoxSize", 1)
     voxel_radius = get_spec_with_default(specs, "VoxelRadius", 1.5)
 
     decoder = arch.Decoder(latent_size, **specs["NetworkSpecs"]).cuda()
@@ -393,6 +395,7 @@ def main_function(experiment_directory, continue_from, batch_split):
         drop_last=True,
     )
 
+    # Generate grid indices of cube
     sdf_grid_indices = deep_ls.data.generate_grid_center_indices(cube_size=cube_size, box_size=box_size)
 
     # voxel_radius is defined as 1.5 times the voxel side length (see DeepLS sec. 4.1) since that value provides
@@ -409,15 +412,16 @@ def main_function(experiment_directory, continue_from, batch_split):
 
     # TODO check if there is something better than Embedding to store codes.
     # TODO Not sure if max_norm=code_bound is necessary
-    # lat_vecs_size is num_scences times the grid (cube_size^3)
-    lat_vec_size = num_scenes * (cube_size**3)
-    lat_vecs = torch.nn.Embedding(lat_vec_size, latent_size, max_norm=code_bound).cuda()
+    embedding = torch.nn.Embedding(cube_size**3, latent_size, max_norm=code_bound)
     torch.nn.init.normal_(
-        lat_vecs.weight.data,
+        embedding.weight.data,
         0.0,
         get_spec_with_default(specs, "CodeInitStdDev", 1.0) / math.sqrt(latent_size),
     )
-    lat_vecs.requires_grad = True
+    embedding.requires_grad = True
+
+    lat_vecs = [embedding] * num_scenes
+    lat_vecs = torch.nn.ModuleList(lat_vecs)
 
     logging.debug(
         "initialized with mean magnitude {}".format(
@@ -425,6 +429,7 @@ def main_function(experiment_directory, continue_from, batch_split):
         )
     )
 
+    # TODO time loss on cuda and without
     loss_l1 = torch.nn.L1Loss(reduction="sum").cuda()
 
     optimizer_all = torch.optim.Adam(
@@ -493,15 +498,16 @@ def main_function(experiment_directory, continue_from, batch_split):
     )
     logging.info(
         "Number of shape code parameters: {} (# codes {}, code dim {})".format(
-            lat_vecs.num_embeddings * lat_vecs.embedding_dim,
-            lat_vecs.num_embeddings,
-            lat_vecs.embedding_dim,
+            lat_vecs[0].num_embeddings * lat_vecs[0].embedding_dim * num_scenes,
+            lat_vecs[0].num_embeddings * num_scenes,
+            lat_vecs[0].embedding_dim * num_scenes,
         )
     )
 
     for epoch in range(start_epoch, num_epochs + 1):
-
-
+        
+        start = time.time()
+        
         logging.info("epoch {}...".format(epoch))
 
         decoder.train()
@@ -510,91 +516,118 @@ def main_function(experiment_directory, continue_from, batch_split):
 
         current_scene = 0
         scene_avg_loss = 0.0
-        len_data_loader = len(sdf_loader)
-
-        batch_size = 4096
-
-        start = time.time()
 
         for sdf_data, indices in sdf_loader:
-            current_scene += 1
-            #logging.info("Scene: {}/{}".format(current_scene, len_data_loader))
-            # sdf_data contains the KDTree of the current scene and all the points in that scene
-            # indices is the index of the npz file -> the scene.
-            sdf_data = sdf_data.reshape(-1, 4)
+
+            # Get correct lat_vecs embedding and load to cuda
+            temp_lat_vec = lat_vecs[indices]
             
+            temp_lat_vec.cuda()
+
+            # Sdf_data contains n samples per scene
+            sdf_data = sdf_data.reshape(-1, 4)            
             sdf_data.requires_grad = False
-        
-            xyz = sdf_data[:,:3]
+
+            # Amount of extracted sdf samples
             num_sdf_samples_total = sdf_data.shape[0]
 
-            # TODO check leaf_size impact on speed. default = 40
-            # Default metric of kdtree is L2 norm, Paper uses L infinity -> chebyshev
+            # Extract point coordinates of sdf value
+            xyz = sdf_data[:,:3]
+            # Build cKDTree to access the indices within a certain radious of a point in a very fast fashion
             sdf_tree = cKDTree(xyz)
 
-            outer_sum = 0.0
-
-            optimizer_all.zero_grad()
+            # Counter for debug purposes
             total_batches_used = 0
             samples_used = 0
             empty_grid_cells = 0
+
+            # Calculate batch size
+            batch_size = int(len(sdf_grid_indices) / batch_split)
+
+            outer_sum = 0.0
+            optimizer_all.zero_grad()
+
             for center_point_index in tqdm(range(0, len(sdf_grid_indices), batch_size)):
+
                 inner_sum = 0.0
                 inputs = []
                 sdf_gts = []
                 batches_used = 0
+
                 for batch in range(batch_size):
+                    # Calculate index in temporary embedding 
                     index = center_point_index + batch
+
                     # Get all indices of the samples that are within the L-radius around the cell center.
                     near_sample_indices = sdf_tree.query_ball_point(x=[sdf_grid_indices[index]], r=sdf_grid_radius, p=np.inf)
+                    
                     # Get number of samples located samples within the L-radius around the cell center
                     near_sample_indices = near_sample_indices[0]
                     if len(near_sample_indices) < 1: 
                         continue
                     
                     samples_used += len(near_sample_indices)
+                    
                     sdf_gt = sdf_data[near_sample_indices, 3].unsqueeze(1)
+                    
                     sdf_gts.append(torch.tanh(sdf_gt))
 
                     transformed_sample = sdf_data[near_sample_indices, :3] - sdf_grid_indices[index] 
                     transformed_sample.requires_grad = False
-                    code = lat_vecs((index + indices[0].cuda() * (cube_size**3)).long()).cuda()
+                    
+                    code = temp_lat_vec((torch.empty(1).fill_(index).cuda()).long()).cuda()
                     code = code.expand(1, 125)
                     code = code.repeat(transformed_sample.shape[0], 1)
+                    
                     inputs.append(torch.cat([code, transformed_sample.cuda()], dim=1).float().cuda())
+                    
                     batches_used += 1
+                
                 # Get network prediction of current sample
                 if len(inputs) < 1:
                     empty_grid_cells += 1
                     continue
+
                 total_batches_used += batches_used
+
                 decoder_input = torch.cat(inputs, dim=0)
+
                 pred_sdf = decoder(decoder_input) 
+
                 # f_theta - s_j
                 sdf_gt = torch.cat(sdf_gts, dim=0)
                 inner_sum = loss_l1(pred_sdf.squeeze(0), sdf_gt.cuda()) / decoder_input.shape[0]
 
                 # Right most part of formula (4) in DeepLS ->  + 1/sigma^2 L2(z_i)
-                if do_code_regularization and num_sdf_samples != 0:
+                if do_code_regularization and num_sdf_samples_total != 0:
                     l2_size_loss = torch.sum(torch.norm(code, dim=0))
 
                     reg_loss = (code_reg_lambda * min(1.0, epoch / 100) * l2_size_loss) / decoder_input.shape[0]
 
-                    inner_sum = inner_sum.cuda() + reg_loss.cuda()
+                    inner_sum = inner_sum + reg_loss
 
                 inner_sum.backward()
 
                 outer_sum += inner_sum.item()
+
             scene_avg_loss += outer_sum
-            logging.info("Scene {} loss = {}".format(current_scene, outer_sum))
+
+            # Store updated temporary lat vec
+            lat_vecs[indices] = temp_lat_vec.cpu()
+
+            current_scene += 1
+
+            logging.info("Scene {}, Scence Index {}, loss = {}".format(current_scene, indices.item(), outer_sum))
             logging.info("Total batches used {} total samples {}".format(total_batches_used, samples_used))
             logging.info("Empty grid cells {}".format(empty_grid_cells))
 
             loss_log.append(outer_sum)
 
             optimizer_all.step()
-        logging.info("Epoch took {} seconds".format(time.time()-start))            
-        logging.info("Epoch scene average loss: {}".format((scene_avg_loss/current_scene)))
+
+        logging.info("Epoch took {} seconds".format(time.time() - start))            
+        logging.info("Epoch scene average loss: {}".format((scene_avg_loss / current_scene)))
+        
         end = time.time()
         seconds_elapsed = end - start
         timing_log.append(seconds_elapsed)
