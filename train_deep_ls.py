@@ -412,16 +412,16 @@ def main_function(experiment_directory, continue_from, batch_split):
 
     # TODO check if there is something better than Embedding to store codes.
     # TODO Not sure if max_norm=code_bound is necessary
-    embedding = torch.nn.Embedding(cube_size**3, latent_size, max_norm=code_bound)
-    torch.nn.init.normal_(
-        embedding.weight.data,
-        0.0,
-        get_spec_with_default(specs, "CodeInitStdDev", 1.0) / math.sqrt(latent_size),
-    )
-    embedding.requires_grad = True
-
-    lat_vecs = [embedding] * num_scenes
-    lat_vecs = torch.nn.ModuleList(lat_vecs)
+    lat_vecs = torch.nn.ModuleList()
+    for scene in range(num_scenes):
+        embedding = torch.nn.Embedding(cube_size**3, latent_size, max_norm=code_bound)
+        torch.nn.init.normal_(
+            embedding.weight.data,
+            0.0,
+            get_spec_with_default(specs, "CodeInitStdDev", 1.0) / math.sqrt(latent_size),
+        )
+        embedding.requires_grad = True
+        lat_vecs.append(embedding)
 
     logging.debug(
         "initialized with mean magnitude {}".format(
@@ -522,8 +522,6 @@ def main_function(experiment_directory, continue_from, batch_split):
             # Get correct lat_vecs embedding and load to cuda
             temp_lat_vec = lat_vecs[indices]
             
-            temp_lat_vec.cuda()
-
             # Sdf_data contains n samples per scene
             sdf_data = sdf_data.reshape(-1, 4)            
             sdf_data.requires_grad = False
@@ -575,11 +573,11 @@ def main_function(experiment_directory, continue_from, batch_split):
                     transformed_sample = sdf_data[near_sample_indices, :3] - sdf_grid_indices[index] 
                     transformed_sample.requires_grad = False
                     
-                    code = temp_lat_vec((torch.empty(1).fill_(index).cuda()).long()).cuda()
+                    code = temp_lat_vec((torch.empty(1).fill_(index)).long())
                     code = code.expand(1, 125)
                     code = code.repeat(transformed_sample.shape[0], 1)
                     
-                    inputs.append(torch.cat([code, transformed_sample.cuda()], dim=1).float().cuda())
+                    inputs.append(torch.cat([code, transformed_sample], dim=1).float().cuda())
                     
                     batches_used += 1
                 
@@ -612,9 +610,6 @@ def main_function(experiment_directory, continue_from, batch_split):
 
             scene_avg_loss += outer_sum
 
-            # Store updated temporary lat vec
-            lat_vecs[indices] = temp_lat_vec.cpu()
-
             current_scene += 1
 
             logging.info("Scene {}, Scence Index {}, loss = {}".format(current_scene, indices.item(), outer_sum))
@@ -624,6 +619,9 @@ def main_function(experiment_directory, continue_from, batch_split):
             loss_log.append(outer_sum)
 
             optimizer_all.step()
+
+             # Store updated temporary lat vec
+            lat_vecs[indices] = temp_lat_vec.cpu()
 
         logging.info("Epoch took {} seconds".format(time.time() - start))            
         logging.info("Epoch scene average loss: {}".format((scene_avg_loss / current_scene)))
