@@ -619,9 +619,6 @@ def main_function(experiment_directory, continue_from, batch_split):
             loss_log.append(outer_sum)
 
             optimizer_all.step()
-            
-            # Store updated temporary lat vec
-            lat_vecs[indices] = temp_lat_vec.cpu()
 
         logging.info("Epoch took {} seconds".format(time.time() - start))            
         logging.info("Epoch scene average loss: {}".format((scene_avg_loss / current_scene)))
