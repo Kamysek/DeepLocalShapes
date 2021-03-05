@@ -517,7 +517,7 @@ def main_function(experiment_directory, continue_from, batch_split):
         current_scene = 0
         scene_avg_loss = 0.0
 
-        for sdf_data, indices in sdf_loader:
+        for sdf_data, indices in tqdm(sdf_loader):
 
             # Get correct lat_vecs embedding and load to cuda
             temp_lat_vec = lat_vecs[indices]
@@ -545,7 +545,7 @@ def main_function(experiment_directory, continue_from, batch_split):
             outer_sum = 0.0
             optimizer_all.zero_grad()
 
-            for center_point_index in tqdm(range(0, len(sdf_grid_indices), batch_size)):
+            for center_point_index in range(0, len(sdf_grid_indices), batch_size):
 
                 inner_sum = 0.0
                 inputs = []
@@ -612,16 +612,13 @@ def main_function(experiment_directory, continue_from, batch_split):
 
             current_scene += 1
 
-            logging.info("Scene {}, Scence Index {}, loss = {}".format(current_scene, indices.item(), outer_sum))
-            logging.info("Total batches used {} total samples {}".format(total_batches_used, samples_used))
-            logging.info("Empty grid cells {}".format(empty_grid_cells))
+            #logging.info("Scene {}, Scence Index {}, loss = {}".format(current_scene, indices.item(), outer_sum))
+            #logging.info("Total batches used {} total samples {}".format(total_batches_used, samples_used))
+            #logging.info("Empty grid cells {}".format(empty_grid_cells))
 
             loss_log.append(outer_sum)
 
             optimizer_all.step()
-
-             # Store updated temporary lat vec
-            lat_vecs[indices] = temp_lat_vec.cpu()
 
         logging.info("Epoch took {} seconds".format(time.time() - start))            
         logging.info("Epoch scene average loss: {}".format((scene_avg_loss / current_scene)))
