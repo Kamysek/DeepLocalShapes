@@ -521,6 +521,7 @@ def main_function(experiment_directory, continue_from, batch_split):
 
             # Get correct lat_vecs embedding and load to cuda
             temp_lat_vec = lat_vecs[indices]
+            temp_lat_vec.cuda()
             
             # Sdf_data contains n samples per scene
             sdf_data = sdf_data.reshape(-1, 4)            
@@ -573,11 +574,11 @@ def main_function(experiment_directory, continue_from, batch_split):
                     transformed_sample = sdf_data[near_sample_indices, :3] - sdf_grid_indices[index] 
                     transformed_sample.requires_grad = False
                     
-                    code = temp_lat_vec((torch.empty(1).fill_(index)).long())
+                    code = temp_lat_vec((torch.empty(1).fill_(index)).cuda().long())
                     code = code.expand(1, 125)
                     code = code.repeat(transformed_sample.shape[0], 1)
                     
-                    inputs.append(torch.cat([code, transformed_sample], dim=1).float().cuda())
+                    inputs.append(torch.cat([code, transformed_sample.cuda()], dim=1).float().cuda())
                     
                     batches_used += 1
                 
@@ -588,7 +589,7 @@ def main_function(experiment_directory, continue_from, batch_split):
 
                 total_batches_used += batches_used
 
-                decoder_input = torch.cat(inputs, dim=0)
+                decoder_input = torch.cat(inputs, dim=0).cuda()
 
                 pred_sdf = decoder(decoder_input) 
 
@@ -619,6 +620,7 @@ def main_function(experiment_directory, continue_from, batch_split):
             loss_log.append(outer_sum)
 
             optimizer_all.step()
+            torch.cuda.empty_cache()
 
         logging.info("Epoch took {} seconds".format(time.time() - start))            
         logging.info("Epoch scene average loss: {}".format((scene_avg_loss / current_scene)))
