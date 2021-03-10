@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-# Based on: https://github.com/facebookresearch/DeepSDF using MIT LICENSE (https://github.com/facebookresearch/DeepSDF/blob/master/LICENSE)
-# Copyright 2021-present Philipp Friedrich, Josef Kamysek. All Rights Reserved.
+# Copyright 2004-present Facebook. All Rights Reserved.
 
 import argparse
 import json
@@ -9,13 +8,13 @@ import os
 import random
 import time
 import torch
+
 import deep_ls
 import deep_ls.workspace as ws
 
-import torch.multiprocessing as mp
-from scipy.spatial import cKDTree
-import numpy as np
+from train_deep_ls import get_spec_with_default
 
+from sklearn.neighbors import KDTree
 
 def reconstruct(
     decoder,
@@ -26,10 +25,10 @@ def reconstruct(
     voxel_radius,
     test_sdf,
     stat,
+    clamp_dist,
     num_samples=30000,
     lr=5e-4,
     l2reg=False,
-    save_intermediate=0
 ):
     def adjust_learning_rate(
         initial_lr, optimizer, num_iterations, decreased_by, adjust_lr_every
@@ -42,7 +41,7 @@ def reconstruct(
     adjust_lr_every = int(num_iterations / 2)
 
     sdf_grid_indices = deep_ls.data.generate_grid_center_indices(cube_size=cube_size, box_size=box_size)
-    sdf_grid_radius = voxel_radius * (((box_size * 2) / cube_size) / 2)
+    sdf_grid_radius = voxel_radius * ((box_size * 2) / cube_size)
 
     if type(stat) == type(0.1):
         latent = torch.ones(len(sdf_grid_indices), latent_size).normal_(mean=0, std=stat).cuda()
@@ -57,78 +56,50 @@ def reconstruct(
     loss_num = 0
     loss_l1 = torch.nn.L1Loss()
 
-    batch_size = 4096
-
     for e in range(num_iterations):
 
         decoder.eval()
-
         sdf_data = deep_ls.data.unpack_sdf_samples_from_ram(
             test_sdf, num_samples
         )
-
-        xyz = sdf_data[:, 0:3].detach().cpu().numpy()
-    
-        sdf_tree = cKDTree(xyz)
-
+        xyz = sdf_data[:, 0:3]
+        sdf_tree = KDTree(xyz, metric="chebyshev", leaf_size=40)
         adjust_learning_rate(lr, optimizer, e, decreased_by, adjust_lr_every)
-
         optimizer.zero_grad()
-        
         loss = 0.0
-        batches_checked = 0
-        batches_used_total = 0
-        for center_point_index in range(0, len(sdf_grid_indices), batch_size):
-            batches_used = 0
-            inputs = []
-            sdf_gts = []
-            for batch in range(batch_size):
-                index = center_point_index + batch
-                batches_checked += 1
-                #near_sample_indices = sdf_tree.query_radius([sdf_grid_indices[center_point_index]], sdf_grid_radius)
-                near_sample_indices = sdf_tree.query_ball_point(x=[sdf_grid_indices[index]], r=sdf_grid_radius, p=np.inf) 
-                near_sample_indices = near_sample_indices[0]
-                if len(near_sample_indices) < 1: 
-                    continue
-                sdf_gt = sdf_data[near_sample_indices, 3].unsqueeze(1)
-                sdf_gts.append(torch.tanh(sdf_gt))
-                transformed_sample = sdf_data[near_sample_indices, :3] - sdf_grid_indices[index] 
-                transformed_sample.requires_grad = False
-                
-                code = latent[index].cuda()
-                code = code.expand(1, 125)
-                code = code.repeat(transformed_sample.shape[0], 1)
-                inputs.append(torch.cat([code, transformed_sample.cuda()], dim=1).float().cuda())
-                batches_used += 1
-            if len(inputs) < 1:
+        for center_point_index in range(len(sdf_grid_indices)):
+            near_sample_indices = sdf_tree.query_radius([sdf_grid_indices[center_point_index]], sdf_grid_radius)
+            num_sdf_samples = len(near_sample_indices[0])
+            if num_sdf_samples < 1: 
                 continue
-            decoder_input = torch.cat(inputs, dim=0)
+            code = latent[center_point_index].cuda()
+            sdf_gt = sdf_data[near_sample_indices[0], 3].unsqueeze(1)
+            sdf_gt = torch.tanh(sdf_gt)
+            transformed_sample = sdf_data[near_sample_indices[0], :3] - sdf_grid_indices[center_point_index] 
+            transformed_sample.requires_grad = False
+            code = code.expand(1, 125)
+            code = code.repeat(transformed_sample.shape[0], 1)
+            decoder_input = torch.cat([code, transformed_sample.cuda()], dim=1).float().cuda()
             pred_sdf = decoder(decoder_input)
-            sdf_gt = torch.cat(sdf_gts, dim=0)
-            loss += loss_l1(pred_sdf, sdf_gt.cuda()) / decoder_input.shape[0]
-            batches_used_total += batches_used
+            loss += loss_l1(pred_sdf, sdf_gt.cuda()) / len(sdf_grid_indices)
         if l2reg:
             loss += 1e-4 * torch.mean(latent.pow(2))
         loss.backward()
-        
         optimizer.step()
 
         if e % 1 == 0:
-            logging.debug("Batches used: {} / checked {}".format(batches_used_total, batches_checked))
             logging.debug(loss.cpu().data.numpy())
             logging.debug(e)
             logging.debug(latent.norm())
-
-        loss_num = loss
-
-        if save_intermediate > 0 and e % save_intermediate == 0:
-            logging.debug("Saving intermediate Reconstruction result.")
+        if e % 50 == 0:
+            logging.debug("SAVING INTERMEDIATE RESULTS to: {}".format(mesh_filename))
             start = time.time()
             with torch.no_grad():
                 deep_ls.mesh.create_mesh(
                     decoder, latent, cube_size, box_size, mesh_filename, N=128, max_batch=int(2 ** 18)
                 )
-            logging.debug("Reconstruct intermediate result took: {} seconds.".format(time.time() - start))
+            logging.debug("Saving tookl time: {}".format(time.time() - start))
+        loss_num = loss.cpu().data.numpy()
 
     return loss_num, latent
 
@@ -136,7 +107,7 @@ def reconstruct(
 if __name__ == "__main__":
 
     arg_parser = argparse.ArgumentParser(
-        description="Use a trained DeepLS decoder to reconstruct a shape given SDF "
+        description="Use a trained DeepSDF decoder to reconstruct a shape given SDF "
         + "samples."
     )
     arg_parser.add_argument(
@@ -180,12 +151,6 @@ if __name__ == "__main__":
         dest="skip",
         action="store_true",
         help="Skip meshes which have already been reconstructed.",
-    )
-    arg_parser.add_argument(
-        "--save_intermediate",
-        dest="save_intermediate",
-        default=0,
-        help="Save intermediate reconstructions each n steps. Deactivate with 0.",
     )
     deep_ls.add_common_args(arg_parser)
 
@@ -317,13 +282,13 @@ if __name__ == "__main__":
                 voxel_radius,
                 data_sdf,
                 0.01,  # [emp_mean,emp_var],
+                0.1,
                 num_samples=8000,
                 lr=5e-3,
-                l2reg=False,
-                save_intermediate=int(args.save_intermediate)
+                l2reg=True,
             )
             logging.debug("reconstruct time: {}".format(time.time() - start))
-            err_sum += err.item()
+            err_sum += err
             logging.debug("current_error avg: {}".format((err_sum / (ii + 1))))
             logging.debug(ii)
 

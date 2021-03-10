@@ -422,6 +422,7 @@ def main_function(experiment_directory, continue_from, batch_split):
         )
         embedding.requires_grad = True
         lat_vecs.append(embedding)
+    lat_vecs.cuda()
 
     logging.debug(
         "initialized with mean magnitude {}".format(
@@ -569,7 +570,7 @@ def main_function(experiment_directory, continue_from, batch_split):
                     
                     sdf_gt = sdf_data[near_sample_indices, 3].unsqueeze(1)
                     
-                    sdf_gts.append(torch.tanh(sdf_gt))
+                    sdf_gts.append(torch.tanh(sdf_gt).cuda())
 
                     transformed_sample = sdf_data[near_sample_indices, :3] - sdf_grid_indices[index] 
                     transformed_sample.requires_grad = False
@@ -599,11 +600,11 @@ def main_function(experiment_directory, continue_from, batch_split):
 
                 # Right most part of formula (4) in DeepLS ->  + 1/sigma^2 L2(z_i)
                 if do_code_regularization and num_sdf_samples_total != 0:
-                    l2_size_loss = torch.sum(torch.norm(code, dim=0))
+                    l2_size_loss = torch.sum(torch.norm(code, dim=0)).cuda()
 
                     reg_loss = (code_reg_lambda * min(1.0, epoch / 100) * l2_size_loss) / decoder_input.shape[0]
 
-                    inner_sum = inner_sum + reg_loss
+                    inner_sum = inner_sum + reg_loss.cuda()
 
                 inner_sum.backward()
 
