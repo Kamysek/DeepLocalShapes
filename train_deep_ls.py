@@ -6,6 +6,7 @@ import functools
 import json
 import logging
 import math
+from networks.deep_ls_decoder import Decoder
 import os
 import signal
 import sys
@@ -18,6 +19,7 @@ import torch
 import torch.multiprocessing as mp
 import torch.utils.data as data_utils
 from scipy.spatial import cKDTree
+from Plot_3d import plot_3D
 import numpy as np
 
 from tqdm import tqdm
@@ -400,7 +402,7 @@ def main_function(experiment_directory, continue_from, batch_split):
 
     # voxel_radius is defined as 1.5 times the voxel side length (see DeepLS sec. 4.1) since that value provides
     # a good trade of between accuracy and efficiency
-    sdf_grid_radius = voxel_radius * (((box_size * 2) / cube_size) / 2)
+    sdf_grid_radius = voxel_radius * ((box_size * 2) / cube_size)
 
     logging.debug("torch num_threads: {}".format(torch.get_num_threads()))
 
@@ -422,7 +424,7 @@ def main_function(experiment_directory, continue_from, batch_split):
         )
         embedding.requires_grad = True
         lat_vecs.append(embedding)
-    lat_vecs.cuda()
+    #lat_vecs.cuda()
 
     logging.debug(
         "initialized with mean magnitude {}".format(
@@ -497,6 +499,7 @@ def main_function(experiment_directory, continue_from, batch_split):
             sum(p.data.nelement() for p in decoder.parameters())
         )
     )
+
     logging.info(
         "Number of shape code parameters: {} (# codes {}, code dim {})".format(
             lat_vecs[0].num_embeddings * lat_vecs[0].embedding_dim * num_scenes,
@@ -525,7 +528,10 @@ def main_function(experiment_directory, continue_from, batch_split):
             temp_lat_vec.cuda()
             
             # Sdf_data contains n samples per scene
-            sdf_data = sdf_data.reshape(-1, 4)            
+            sdf_data = sdf_data.reshape(-1, 4)    
+            #sdf_data[:, 3] = ((sdf_data[:, 3]-sdf_data[:, 3].min()) / (sdf_data[:, 3].max()-sdf_data[:, 3].min()))*0.9
+            #gt = sdf_data[:, 3].cpu().detach().numpy()
+            #sdf_data[:, 3] = torch.from_numpy(np.interp(gt, (gt.min(), gt.max()), (-0.9, 0.9))).cuda()
             sdf_data.requires_grad = False
 
             # Amount of extracted sdf samples
@@ -533,6 +539,11 @@ def main_function(experiment_directory, continue_from, batch_split):
 
             # Extract point coordinates of sdf value
             xyz = sdf_data[:,:3]
+
+            #plot_xyz = sdf_data.clone().detach()
+            #plot_xyz = plot_xyz.numpy()
+            #plot_xyz[:, 3] = 0.9
+
             # Build cKDTree to access the indices within a certain radious of a point in a very fast fashion
             sdf_tree = cKDTree(xyz)
 
@@ -551,26 +562,31 @@ def main_function(experiment_directory, continue_from, batch_split):
 
                 inner_sum = 0.0
                 inputs = []
+                #inputs_single = []
                 sdf_gts = []
+                #sdf_gts_single = []
                 batches_used = 0
+                #input_indices = []
 
                 for batch in range(batch_size):
                     # Calculate index in temporary embedding 
                     index = center_point_index + batch
 
                     # Get all indices of the samples that are within the L-radius around the cell center.
-                    near_sample_indices = sdf_tree.query_ball_point(x=[sdf_grid_indices[index]], r=sdf_grid_radius, p=np.inf)
-                    
+                    near_sample_indices = sdf_tree.query_ball_point(x=[sdf_grid_indices[index]], r=sdf_grid_radius, p=np.inf, return_sorted=True)
+                    #near_sample_indices_single = sdf_tree.query_ball_point(x=[sdf_grid_indices[index]], r=(sdf_grid_radius / 1.5 / 2), p=np.inf, return_sorted=True)
+
                     # Get number of samples located samples within the L-radius around the cell center
                     near_sample_indices = near_sample_indices[0]
+                    #near_sample_indices_single = near_sample_indices_single[0]
                     if len(near_sample_indices) < 1: 
                         continue
                     
                     samples_used += len(near_sample_indices)
                     
-                    sdf_gt = sdf_data[near_sample_indices, 3].unsqueeze(1)
+                    sdf_gt = sdf_data[near_sample_indices, 3] #.unsqueeze(1)
                     
-                    sdf_gts.append(torch.tanh(sdf_gt).cuda())
+                    sdf_gts.extend(torch.tanh(sdf_gt).cuda())
 
                     transformed_sample = sdf_data[near_sample_indices, :3] - sdf_grid_indices[index] 
                     transformed_sample.requires_grad = False
@@ -579,7 +595,24 @@ def main_function(experiment_directory, continue_from, batch_split):
                     code = code.expand(1, 125)
                     code = code.repeat(transformed_sample.shape[0], 1)
                     
-                    inputs.append(torch.cat([code, transformed_sample.cuda()], dim=1).float().cuda())
+                    inputs.extend(torch.cat([code, transformed_sample.cuda()], dim=1).float().cuda())
+                    
+                    ##
+                    """if len(near_sample_indices_single) > 0: 
+
+                        sdf_gt_single = sdf_data[near_sample_indices_single, :] #.unsqueeze(1)
+                        sdf_gt_single[:, 3] = torch.tanh(sdf_gt_single[:, 3]).cuda()
+                        sdf_gts_single.extend(sdf_gt_single)
+
+                        transformed_sample_single = sdf_data[near_sample_indices_single, :3] - sdf_grid_indices[index] 
+                        transformed_sample_single.requires_grad = False
+                        
+                        code_single = temp_lat_vec((torch.empty(1).fill_(index)).cuda().long())
+                        code_single = code_single.expand(1, 125)
+                        code_single = code_single.repeat(transformed_sample_single.shape[0], 1)
+                        
+                        inputs_single.extend(torch.cat([code_single, transformed_sample_single.cuda()], dim=1).float().cuda())
+                        input_indices.extend(near_sample_indices_single)"""
                     
                     batches_used += 1
                 
@@ -590,13 +623,27 @@ def main_function(experiment_directory, continue_from, batch_split):
 
                 total_batches_used += batches_used
 
-                decoder_input = torch.cat(inputs, dim=0).cuda()
+                decoder_input = torch.stack(inputs).cuda()
 
-                pred_sdf = decoder(decoder_input) 
+                pred_sdf = decoder(decoder_input).squeeze()
 
                 # f_theta - s_j
-                sdf_gt = torch.cat(sdf_gts, dim=0)
+                sdf_gt = torch.stack(sdf_gts)
+
+
+                ##
+                #decoder_input_single = torch.stack(inputs_single).cuda()
+
+                #pred_sdf_single = decoder(decoder_input_single).squeeze()
+
+                #sdf_gt_single = torch.stack(sdf_gts_single)
+
+                if (np.sign(pred_sdf.detach().cpu()) == np.sign(sdf_gt.detach().cpu())).all():
+                     logging.info("WRONG PREDICTION")
+
                 inner_sum = loss_l1(pred_sdf.squeeze(0), sdf_gt.cuda()) / decoder_input.shape[0]
+                
+                #plot_xyz[input_indices, 3] = np.reshape(pred_sdf_single.cpu().data.numpy(), -1)
 
                 # Right most part of formula (4) in DeepLS ->  + 1/sigma^2 L2(z_i)
                 if do_code_regularization and num_sdf_samples_total != 0:
@@ -622,6 +669,57 @@ def main_function(experiment_directory, continue_from, batch_split):
 
             optimizer_all.step()
             torch.cuda.empty_cache()
+            # zs = plot_xyz[:, 3]
+            # zs = np.interp(zs, (zs.min(), zs.max()), (-1, +1))
+            # zs += zs.mean()
+            # plot_xyz[:, 3] = zs
+            # All points from training
+            """fig = plot_3D(plot_xyz[:, 0:3], plot_xyz[:, 3], epoch, [plot_xyz[:, 3].min(), plot_xyz[:, 3].max(), f'Plane_Epoch_All_{epoch}'], [ [ 0, 1, 0 ], [ 0.5, 1.4, -0.5 ] ], '/home/philippgfriedrich/DeepLocalShapes/plots/', flag_plot=True, flag_screenshot=True, row=1, col=2, scene=1)
+
+            # # Only negative values 
+            test = plot_xyz[np.where(plot_xyz[:,3] < 0)]
+            fig = plot_3D(test[:, 0:3], test[:, 3], epoch, [test[:, 3].min(), test[:, 3].max(), f'Plane_Epoch_Negative_{epoch}'], [ [ 0, 1, 0 ], [ 0.5, 1.4, -0.5 ] ], '/home/philippgfriedrich/DeepLocalShapes/plots/', fig=fig, flag_plot=True, flag_screenshot=True, row=2, col=2, scene=1)
+
+            # # Only negative & zero values 
+            test = plot_xyz[np.where(plot_xyz[:,3] <= 0)]
+            fig = plot_3D(test[:, 0:3], test[:, 3], epoch, [test[:, 3].min(), test[:, 3].max(), f'Plane_Epoch_Zero_{epoch}'], [ [ 0, 1, 0 ], [ 0.5, 1.4, -0.5 ] ], '/home/philippgfriedrich/DeepLocalShapes/plots/', fig=fig, flag_plot=True, flag_screenshot=True, row=3, col=2, scene=1)
+
+            # # Only positive values
+            test = plot_xyz[np.where(plot_xyz[:,3] > 0)]
+            fig = plot_3D(test[:, 0:3], test[:, 3], epoch, [test[:, 3].min(), test[:, 3].max(), f'Plane_Epoch_Positive_{epoch}'], [ [ 0, 1, 0 ], [ 0.5, 1.4, -0.5 ] ], '/home/philippgfriedrich/DeepLocalShapes/plots/', fig=fig, flag_plot=True, flag_screenshot=True, row=4, col=2, scene=1)
+
+            # # GT all values
+            test1 = sdf_data.numpy()
+            fig = plot_3D(test1[:, 0:3], test1[:, 3], epoch, [test1[:, 3].min(), test1[:, 3].max(), f'Plane_Epoch_GT_All_{epoch}'], [ [ 0, 1, 0 ], [ 0.5, 1.4, -0.5 ] ], '/home/philippgfriedrich/DeepLocalShapes/plots/', fig=fig, flag_plot=True, flag_screenshot=True, row=1, col=1, scene=1)
+
+            # # GT positive values
+            test1 = sdf_data.numpy()
+            test = test1[np.where(test1[:,3] > 0)]
+            fig = plot_3D(test[:, 0:3], test[:, 3], epoch, [test[:, 3].min(), test[:, 3].max(), f'Plane_Epoch_GT_Positive_{epoch}'], [ [ 0, 1, 0 ], [ 0.5, 1.4, -0.5 ] ], '/home/philippgfriedrich/DeepLocalShapes/plots/', fig=fig, flag_plot=True, flag_screenshot=True, row=4, col=1, scene=1)
+
+            # # GT negative & zero values
+            test1 = sdf_data.numpy()
+            test = test1[np.where(test1[:,3] <= 0)]
+            fig = plot_3D(test[:, 0:3], test[:, 3], epoch, [test[:, 3].min(), test[:, 3].max(), f'Plane_Epoch_GT_Zero_{epoch}'], [ [ 0, 1, 0 ], [ 0.5, 1.4, -0.5 ] ], '/home/philippgfriedrich/DeepLocalShapes/plots/', fig=fig, flag_plot=True, flag_screenshot=True, row=3, col=1, scene=1)
+
+            # # GT negative values
+            test1 = sdf_data.numpy()
+            test = test1[np.where(test1[:,3] < 0)]
+            fig = plot_3D(test[:, 0:3], test[:, 3], epoch, [test[:, 3].min(), test[:, 3].max(), f'Plane_Epoch_GT_Negative_{epoch}'], [ [ 0, 1, 0 ], [ 0.5, 1.4, -0.5 ] ], '/home/philippgfriedrich/DeepLocalShapes/plots/', fig=fig, flag_plot=True, flag_screenshot=True, row=2, col=1, scene=1)
+
+            print("Plotting done.")
+            #exit(0)
+            
+            test = "/home/philippgfriedrich/DeepLocalShapes/plots/mesh_1021a0914a7207aff927ed529ad90a11"
+
+            logging.info("SAVING INTERMEDIATE RESULTS to: {}".format(test))
+            start = time.time()
+            with torch.no_grad():
+                deep_ls.mesh.create_mesh(
+                    decoder, temp_lat_vec.weight.data, cube_size, box_size, test, N=128, max_batch=int(2 ** 18)
+                )
+            logging.info("Saving tookl time: {}".format(time.time() - start))
+            exit(0)"""
 
         logging.info("Epoch took {} seconds".format(time.time() - start))            
         logging.info("Epoch scene average loss: {}".format((scene_avg_loss / current_scene)))
@@ -655,8 +753,8 @@ def main_function(experiment_directory, continue_from, batch_split):
         # FOR DEBUGGING ONLY!
         logging.debug("Trying to reconstruct with trained model")
         with torch.no_grad():
-            debug_file_name = "/home/philippgfriedrich/DeepLocalShapes/examples/sofas/Reconstructions/2000/Meshes/ShapeNetV2/04256520/trained_1037fd31d12178d396f164a988ef37cc"
-            lat_vec_mesh = np.array(lat_vecs.cpu().weight.data)
+            debug_file_name = "/home/philippgfriedrich/DeepLocalShapes/examples/intermediate_mesh"
+            lat_vec_mesh = lat_vecs[0].weight.data
             deep_ls.mesh.create_mesh(
                 decoder, lat_vec_mesh, cube_size, box_size, debug_file_name, N=128, max_batch=int(2 ** 18)
             )

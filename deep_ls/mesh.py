@@ -9,8 +9,10 @@ import time
 import torch
 
 import deep_ls.utils
+from Plot_3d import plot_3D
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
-from sklearn.neighbors import KDTree
 from scipy.spatial import cKDTree
 from tqdm import tqdm
 
@@ -26,7 +28,7 @@ def create_mesh(decoder, latent_vec, cube_size, box_size, filename, N=128, max_b
     voxel_size = 2.0 / (N - 1)
 
     overall_index = torch.arange(0, N ** 3, 1, out=torch.LongTensor())
-    samples = torch.zeros(N ** 3, 4)
+    samples = torch.ones(N ** 3, 4)
 
     # transform first 3 columns
     # to be the x, y, z index
@@ -45,6 +47,7 @@ def create_mesh(decoder, latent_vec, cube_size, box_size, filename, N=128, max_b
     samples.requires_grad = False
 
     grid_radius = ((box_size * 2) / cube_size) / 2
+    #grid_radius = 0.047
 
     samples_counter = np.zeros((samples.shape[0], 1), dtype=np.int)
     
@@ -52,7 +55,7 @@ def create_mesh(decoder, latent_vec, cube_size, box_size, filename, N=128, max_b
     sdf_grid_indices = deep_ls.data.generate_grid_center_indices(cube_size=cube_size, box_size=box_size)
     continue_counter = 0
     for center_point_index in tqdm(range(len(sdf_grid_indices))):
-        near_sample_indices = sdf_tree.query_ball_point(x=[sdf_grid_indices[center_point_index]], r=grid_radius, p=np.inf) 
+        near_sample_indices = sdf_tree.query_ball_point(x=[sdf_grid_indices[center_point_index]], r=grid_radius, p=np.inf, return_sorted=True) 
         # num_sdf_samples = len(near_sample_indices_one[0])
         # if num_sdf_samples < 1: 
         #     continue
@@ -89,8 +92,31 @@ def create_mesh(decoder, latent_vec, cube_size, box_size, filename, N=128, max_b
     logging.debug("Max count for a single sample is {}".format(max(samples_counter)[0]))
     logging.debug("Non-Zero samples are {}".format(np.count_nonzero(samples_counter)))
     logging.debug("Continue counter {}".format(continue_counter))
+    
+    fig = go.Figure()
+    fig = make_subplots(rows=4, cols=1, specs=[ [{'type': 'scatter3d'}], [{'type': 'scatter3d'}], [{'type': 'scatter3d'}], [{'type': 'scatter3d'}] ],
+                    subplot_titles=(
+                        'Mesh_All', 'Mesh_Neg', 'Mesh_Zero', 'Mesh_Pos'),
+                    vertical_spacing=0.05, horizontal_spacing=0.001)
 
-    sdf_values = samples[:, 3]
+                
+    plot_xyz = samples.data.cpu().numpy()
+    plot_xyz = plot_xyz[np.random.randint(plot_xyz.shape[0], size=65536), :]
+    fig = plot_3D(plot_xyz[:, 0:3], plot_xyz[:, 3], 1901, [plot_xyz[:, 3].min(), plot_xyz[:, 3].max(), f'Plane_Mesh_All'], [ [ 0, 1, 0 ], [ 0.5, 1.4, -0.5 ] ], '/home/philippgfriedrich/DeepLocalShapes/plots/', fig=fig, flag_plot=True, flag_screenshot=False, row=1, col=1, scene=1)
+    # # Only negative values 
+    test = plot_xyz[np.where(plot_xyz[:,3] < 0)]
+    fig = plot_3D(test[:, 0:3], test[:, 3], 1901, [test[:, 3].min(), test[:, 3].max(), f'Plane_Mesh_Negative'], [ [ 0, 1, 0 ], [ 0.5, 1.4, -0.5 ] ], '/home/philippgfriedrich/DeepLocalShapes/plots/', fig=fig, flag_plot=True, flag_screenshot=False, row=2, col=1, scene=1)
+
+    # # Only negative & zero values 
+    test = plot_xyz[np.where(plot_xyz[:,3] <= 0)]
+    fig = plot_3D(test[:, 0:3], test[:, 3], 1901, [test[:, 3].min(), test[:, 3].max(), f'Plane_Mesh_NegZero'], [ [ 0, 1, 0 ], [ 0.5, 1.4, -0.5 ] ], '/home/philippgfriedrich/DeepLocalShapes/plots/', fig=fig, flag_plot=True, flag_screenshot=False, row=3, col=1, scene=1)
+
+    # # Only positive values
+    test = plot_xyz[np.where(plot_xyz[:,3] > 0)]
+    fig = plot_3D(test[:, 0:3], test[:, 3], 1901, [test[:, 3].min(), test[:, 3].max(), f'Plane_Mesh_Positive'], [ [ 0, 1, 0 ], [ 0.5, 1.4, -0.5 ] ], '/home/philippgfriedrich/DeepLocalShapes/plots/', fig=fig, flag_plot=True, flag_screenshot=False, row=4, col=1, scene=1)
+
+
+    sdf_values = samples[:, 3].data.cpu().numpy()
     if sdf_values.min() > 0.0:
         print("---------------- WARNING ----------")
         logging.warning("NO NEGATIVE SDF VALUE!")
@@ -99,8 +125,9 @@ def create_mesh(decoder, latent_vec, cube_size, box_size, filename, N=128, max_b
     end = time.time()
     print("sampling takes: %f" % (end - start))
 
+
     convert_sdf_samples_to_ply(
-        sdf_values.data.cpu(),
+        sdf_values,
         voxel_origin,
         voxel_size,
         ply_filename + ".ply",
@@ -129,7 +156,7 @@ def convert_sdf_samples_to_ply(
     """
     start_time = time.time()
 
-    numpy_3d_sdf_tensor = pytorch_3d_sdf_tensor.numpy()
+    numpy_3d_sdf_tensor = pytorch_3d_sdf_tensor#.numpy()
 
     verts, faces, normals, values = skimage.measure.marching_cubes_lewiner(
         numpy_3d_sdf_tensor, level=0.0, spacing=[voxel_size] * 3
@@ -137,7 +164,7 @@ def convert_sdf_samples_to_ply(
 
     # transform from voxel coordinates to camera coordinates
     # note x and y are flipped in the output of marching_cubes
-    mesh_points = np.zeros_like(verts)
+    mesh_points = np.ones_like(verts)
     mesh_points[:, 0] = voxel_grid_origin[0] + verts[:, 0]
     mesh_points[:, 1] = voxel_grid_origin[1] + verts[:, 1]
     mesh_points[:, 2] = voxel_grid_origin[2] + verts[:, 2]
