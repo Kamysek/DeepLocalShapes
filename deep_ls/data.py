@@ -93,9 +93,12 @@ def create_dict_and_index(samples):
    
 
 def add_cubes_to_samples(samples, voxel_size, grid_indices, radius):
-    for i in tqdm(samples):
+    
+    temp_samples = np.zeros((samples.shape[0],2), dtype=np.ndarray)
+
+    for index, element in enumerate(tqdm(samples)):
         # Extract xyz coordinates of current sample
-        x, y, z = i[0:3]
+        x, y, z = element[0:3]
 
         cube_indices = []
         # Determine x,y,z entry in matrix
@@ -117,8 +120,10 @@ def add_cubes_to_samples(samples, voxel_size, grid_indices, radius):
                         tmp_grid_xyz  = grid_indices[tmp_grid_index]
                         if abs(tmp_grid_xyz[0]-x) < radius and abs(tmp_grid_xyz[1] - y) < radius and abs(tmp_grid_xyz[2] - z):
                             cube_indices.append(tmp_grid_index)
-        i = np.concatenate((i, cube_indices), axis=0)
-    return samples
+        
+        temp_samples[index] = element, np.array(cube_indices, dtype=int)
+        
+    return temp_samples
 
 
 def determine_cubes_for_sample(filename, box_size, cube_size, radius=1.5):
@@ -140,9 +145,7 @@ def determine_cubes_for_sample(filename, box_size, cube_size, radius=1.5):
     neg = add_cubes_to_samples(neg, voxel_size, grid_indices, radius)
                             
     # Store samples  back
-    npz["pos"] = pos
-    npz["neg"] = neg
-    np.savez(filename, npz)
+    np.savez(filename, pos=pos, neg=neg)
             
 
 def unpack_sdf_samples(filename, subsample=None):
