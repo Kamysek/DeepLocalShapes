@@ -13,6 +13,7 @@ import torch.utils.data
 import deep_ls.workspace as ws
 
 from collections import defaultdict
+from tqdm import tqdm
 
 def get_instance_filenames(data_source, split):
     npzfiles = []
@@ -92,7 +93,7 @@ def create_dict_and_index(samples):
    
 
 def add_cubes_to_samples(samples, voxel_size, grid_indices, radius):
-    for i in samples:
+    for i in tqdm(samples):
         # Extract xyz coordinates of current sample
         x, y, z = i[0:3]
 
@@ -103,18 +104,16 @@ def add_cubes_to_samples(samples, voxel_size, grid_indices, radius):
         z_entry = int(np.floor((z+1)/ voxel_size))
 
         # Determine subcube index and get center point of subcube index
-        N = grid_indices.shape[0]        
-        grid_index = x_entry + N * (y_entry + N * z_entry)
-        cube_indices.append(grid_index)
-        for x_change in [-1, 1]:
-            for y_change in [-1, 1]:
-                for z_change in [-1, 1]:
+        N = 32
+        for x_change in [-1, 0, 1]:
+            for y_change in [-1, 0, 1]:
+                for z_change in [-1, 0, 1]:
                     tmp_x = x_entry + x_change
                     tmp_y = y_entry + y_change
                     tmp_z = z_entry + z_change
                     
-                    if not ((tmp_x or tmp_y or tmp_z) < 0 or (tmp_x or tmp_y or tmp_z) >= 32):
-                        tmp_grid_index = x_entry + N * (y_entry + N * z_entry)
+                    if min(tmp_x, tmp_y, tmp_z) >= 0 and max(tmp_x, tmp_y, tmp_z) < 32:
+                        tmp_grid_index = tmp_z + N * (tmp_y + N * tmp_x)
                         tmp_grid_xyz  = grid_indices[tmp_grid_index]
                         if abs(tmp_grid_xyz[0]-x) < radius and abs(tmp_grid_xyz[1] - y) < radius and abs(tmp_grid_xyz[2] - z):
                             cube_indices.append(tmp_grid_index)
@@ -135,10 +134,12 @@ def determine_cubes_for_sample(filename, box_size, cube_size, radius=1.5):
     # Modify npz file
     radius = radius * voxel_size
 
+    print("Processing positives samples...")
     pos = add_cubes_to_samples(pos, voxel_size, grid_indices, radius)
+    print("Processing negative samples...")
     neg = add_cubes_to_samples(neg, voxel_size, grid_indices, radius)
                             
-    # Store samples back
+    # Store samples  back
     npz["pos"] = pos
     npz["neg"] = neg
     np.savez(filename, npz)
