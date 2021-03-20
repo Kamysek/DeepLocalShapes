@@ -60,18 +60,18 @@ def find_mesh_in_directory(shape_dir):
 
 
 def remove_nans(tensor):
-    tensor_nan = torch.isnan(tensor[:, 3])
+    tensor_nan = torch.isnan(tensor[0][:, 3])
     return tensor[~tensor_nan, :]
 
-def remove_tobig_tosmall(tensor):
-    xyz = tensor[:, 0:3]
-    tensor_tobig = torch.where(xyz > 1)[0].numpy()
-    tensor_tosmall = torch.where(xyz < -1)[0].numpy()
-    tensor_tobig_tosmall = np.concatenate((tensor_tobig, tensor_tosmall))
+# def remove_tobig_tosmall(tensor):
+#     xyz = tensor[0][:, 0:3]
+#     tensor_tobig = torch.where(xyz > 1)[0].numpy()
+#     tensor_tosmall = torch.where(xyz < -1)[0].numpy()
+#     tensor_tobig_tosmall = np.concatenate((tensor_tobig, tensor_tosmall))
 
-    tensor = np.delete(tensor.numpy(), tensor_tobig_tosmall, axis=0)
-    tensor = torch.from_numpy(tensor).double()
-    return tensor 
+#     tensor = np.delete(tensor[0].numpy(), tensor_tobig_tosmall, axis=0)
+#     tensor = torch.from_numpy(tensor).double()
+#     return tensor 
 
 
 def read_sdf_samples_into_ram(filename):
@@ -94,13 +94,13 @@ def create_dict_and_index(samples):
 
 def add_cubes_to_samples(samples, voxel_size, grid_indices, radius):
     
-    temp_samples = np.zeros((samples.shape[0],2), dtype=np.ndarray)
+    temp_samples = np.zeros((samples.shape[0],31))
 
     for index, element in enumerate(tqdm(samples)):
         # Extract xyz coordinates of current sample
         x, y, z = element[0:3]
 
-        cube_indices = []
+        cube_indices = np.zeros((27))
         # Determine x,y,z entry in matrix
         x_entry = int(np.floor((x+1) / voxel_size)) 
         y_entry = int(np.floor((y+1) / voxel_size))
@@ -108,6 +108,7 @@ def add_cubes_to_samples(samples, voxel_size, grid_indices, radius):
 
         # Determine subcube index and get center point of subcube index
         N = 32
+        counter = 0 
         for x_change in [-1, 0, 1]:
             for y_change in [-1, 0, 1]:
                 for z_change in [-1, 0, 1]:
@@ -119,9 +120,9 @@ def add_cubes_to_samples(samples, voxel_size, grid_indices, radius):
                         tmp_grid_index = tmp_z + N * (tmp_y + N * tmp_x)
                         tmp_grid_xyz  = grid_indices[tmp_grid_index]
                         if abs(tmp_grid_xyz[0]-x) < radius and abs(tmp_grid_xyz[1] - y) < radius and abs(tmp_grid_xyz[2] - z):
-                            cube_indices.append(tmp_grid_index)
-        
-        temp_samples[index] = element, np.array(cube_indices, dtype=int)
+                            cube_indices[counter] = tmp_grid_index + 1
+                    counter += 1
+        temp_samples[index] = np.concatenate((element, cube_indices))
         
     return temp_samples
 
@@ -145,18 +146,19 @@ def determine_cubes_for_sample(filename, box_size, cube_size, radius=1.5):
     neg = add_cubes_to_samples(neg, voxel_size, grid_indices, radius)
                             
     # Store samples  back
+    filename = filename[:-4] + "_temp.npz"
     np.savez(filename, pos=pos, neg=neg)
             
 
 def unpack_sdf_samples(filename, subsample=None):
-    npz = np.load(filename)
+    npz = np.load(filename, allow_pickle=True)
     if subsample is None:
         return npz
     pos_tensor = remove_nans(torch.from_numpy(npz["pos"]).double())
     neg_tensor = remove_nans(torch.from_numpy(npz["neg"]).double())
 
-    pos_tensor = remove_tobig_tosmall(pos_tensor)
-    neg_tensor = remove_tobig_tosmall(neg_tensor)
+    # pos_tensor = remove_tobig_tosmall(pos_tensor)
+    # neg_tensor = remove_tobig_tosmall(neg_tensor)
 
     # split the sample into half
     half = int(subsample / 2)
@@ -242,9 +244,9 @@ class SDFSamples(torch.utils.data.Dataset):
                 filename = os.path.join(self.data_source, ws.sdf_samples_subdir, f)
                 npz = np.load(filename)
                 pos_tensor = remove_nans(torch.from_numpy(npz["pos"]).double())
-                pos_tensor = remove_tobig_tosmall(pos_tensor)
+                # pos_tensor = remove_tobig_tosmall(pos_tensor)
                 neg_tensor = remove_nans(torch.from_numpy(npz["neg"]).double())
-                neg_tensor = remove_tobig_tosmall(neg_tensor)
+                # neg_tensor = remove_tobig_tosmall(neg_tensor)
                 self.loaded_data.append(
                     [
                         pos_tensor[torch.randperm(pos_tensor.shape[0])],
