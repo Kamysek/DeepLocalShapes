@@ -60,18 +60,18 @@ def find_mesh_in_directory(shape_dir):
 
 
 def remove_nans(tensor):
-    tensor_nan = torch.isnan(tensor[0][:, 3])
+    tensor_nan = torch.isnan(tensor[:, 3])
     return tensor[~tensor_nan, :]
 
-# def remove_tobig_tosmall(tensor):
-#     xyz = tensor[0][:, 0:3]
-#     tensor_tobig = torch.where(xyz > 1)[0].numpy()
-#     tensor_tosmall = torch.where(xyz < -1)[0].numpy()
-#     tensor_tobig_tosmall = np.concatenate((tensor_tobig, tensor_tosmall))
+def remove_tobig_tosmall(tensor):
+    xyz = tensor[:, 0:3]
+    tensor_tobig = torch.where(xyz > 1)[0].numpy()
+    tensor_tosmall = torch.where(xyz < -1)[0].numpy()
+    tensor_tobig_tosmall = np.concatenate((tensor_tobig, tensor_tosmall))
 
-#     tensor = np.delete(tensor[0].numpy(), tensor_tobig_tosmall, axis=0)
-#     tensor = torch.from_numpy(tensor).double()
-#     return tensor 
+    tensor = np.delete(tensor.numpy(), tensor_tobig_tosmall, axis=0)
+    tensor = torch.from_numpy(tensor).double()
+    return tensor 
 
 
 def read_sdf_samples_into_ram(filename):
@@ -151,14 +151,14 @@ def determine_cubes_for_sample(filename, box_size, cube_size, radius=1.5):
             
 
 def unpack_sdf_samples(filename, subsample=None):
-    npz = np.load(filename, allow_pickle=True)
+    npz = np.load(filename)
     if subsample is None:
         return npz
     pos_tensor = remove_nans(torch.from_numpy(npz["pos"]).double())
     neg_tensor = remove_nans(torch.from_numpy(npz["neg"]).double())
 
-    # pos_tensor = remove_tobig_tosmall(pos_tensor)
-    # neg_tensor = remove_tobig_tosmall(neg_tensor)
+    pos_tensor = remove_tobig_tosmall(pos_tensor)
+    neg_tensor = remove_tobig_tosmall(neg_tensor)
 
     # split the sample into half
     half = int(subsample / 2)

@@ -521,43 +521,89 @@ def main_function(experiment_directory, continue_from, batch_split):
         current_scene = 0
         scene_avg_loss = 0.0
 
-        for sdf_data, indices in tqdm(sdf_loader):
+        for sdf_data, indices in sdf_loader:
 
             # Get correct lat_vecs embedding and load to cuda
             temp_lat_vec = lat_vecs[indices]
             temp_lat_vec.cuda()
             
             # Sdf_data contains n samples per scene
-            sdf_data = sdf_data.reshape(-1, 4)    
+            sdf_data = sdf_data.reshape(-1, 31)    
             #sdf_data[:, 3] = ((sdf_data[:, 3]-sdf_data[:, 3].min()) / (sdf_data[:, 3].max()-sdf_data[:, 3].min()))*0.9
             #gt = sdf_data[:, 3].cpu().detach().numpy()
             #sdf_data[:, 3] = torch.from_numpy(np.interp(gt, (gt.min(), gt.max()), (-0.9, 0.9))).cuda()
             sdf_data.requires_grad = False
 
             # Amount of extracted sdf samples
-            num_sdf_samples_total = sdf_data.shape[0]
+            #num_sdf_samples_total = sdf_data.shape[0]
 
             # Extract point coordinates of sdf value
-            xyz = sdf_data[:,:3]
+            #xyz = sdf_data[:,:3]
 
             #plot_xyz = sdf_data.clone().detach()
             #plot_xyz = plot_xyz.numpy()
             #plot_xyz[:, 3] = 0.9
 
             # Build cKDTree to access the indices within a certain radious of a point in a very fast fashion
-            sdf_tree = cKDTree(xyz)
+            # sdf_tree = cKDTree(xyz)
 
             # Counter for debug purposes
-            total_batches_used = 0
-            samples_used = 0
-            empty_grid_cells = 0
+            #total_batches_used = 0
+            #samples_used = 0
+            #empty_grid_cells = 0
 
-            # Calculate batch size
-            batch_size = int(len(sdf_grid_indices) / batch_split)
+            counter = 0
 
             outer_sum = 0.0
             optimizer_all.zero_grad()
 
+            grid_indices_losses = np.zeros(len(sdf_grid_indices))
+            inputs = []
+            sdf_gts = []
+            input_grid_indicies = []
+            for sample in tqdm(sdf_data):
+                grid_indices = sample[5:]
+                grid_indices = grid_indices[np.where(grid_indices>0)]
+                grid_indices -= 1
+                for grid_index in grid_indices:
+                    sdf_gts.append(torch.tanh(sample[3]).cuda())
+                    transformed_sample = sample[:3] - sdf_grid_indices[int(grid_index)] 
+                    transformed_sample = transformed_sample.expand(1, 3)
+                    transformed_sample.requires_grad = False
+                    code = temp_lat_vec((torch.empty(1).fill_(grid_index)).cuda().long())
+                    inputs.extend(torch.cat([code, transformed_sample.cuda()], dim=1).float().cuda())
+                    input_grid_indicies.append(grid_index)
+                    counter += 1
+            inputs =  torch.stack(inputs).cuda()
+            sdf_gts = torch.stack(sdf_gts).cuda()
+            input_grid_indicies = torch.stack(input_grid_indicies)
+            batch_size = int(inputs.shape[0] / batch_split)
+            for batch in range(0, inputs.shape[0], batch_size):
+                pred = decoder(inputs[batch:batch+batch_size])
+                groundtruth = sdf_gts[batch:batch+batch_size]
+                inner_sum = loss_l1(pred.squeeze(), groundtruth) / batch_size
+                grid_indices_losses[input_grid_indicies[batch:batch+batch_size].int()] += inner_sum.item()
+                inner_sum.backward()
+            outer_sum = 0.0
+            for grid_indx, grid_loss in enumerate(grid_indices_losses):
+                outer_sum += grid_loss
+                if do_code_regularization:
+                    code = temp_lat_vec((torch.empty(1).fill_(grid_indx)).cuda().long())
+                    l2_size_loss = torch.sum(torch.norm(code, dim=0)).cuda()
+
+                    reg_loss = (code_reg_lambda * min(1.0, epoch / 100) * l2_size_loss) / len(grid_indices_losses)
+                    outer_sum += reg_loss.cuda()
+                
+            current_scene += 1
+            print("Scene {} loss: {}".format(current_scene, outer_sum))
+            loss_log.append(outer_sum)
+            optimizer_all.step()
+            torch.cuda.empty_cache()
+
+
+
+
+            """ # OLD CODE 
             for center_point_index in range(0, len(sdf_grid_indices), batch_size):
 
                 inner_sum = 0.0
@@ -597,8 +643,9 @@ def main_function(experiment_directory, continue_from, batch_split):
                     
                     inputs.extend(torch.cat([code, transformed_sample.cuda()], dim=1).float().cuda())
                     
+
                     ##
-                    """if len(near_sample_indices_single) > 0: 
+                    if len(near_sample_indices_single) > 0: 
 
                         sdf_gt_single = sdf_data[near_sample_indices_single, :] #.unsqueeze(1)
                         sdf_gt_single[:, 3] = torch.tanh(sdf_gt_single[:, 3]).cuda()
@@ -612,7 +659,7 @@ def main_function(experiment_directory, continue_from, batch_split):
                         code_single = code_single.repeat(transformed_sample_single.shape[0], 1)
                         
                         inputs_single.extend(torch.cat([code_single, transformed_sample_single.cuda()], dim=1).float().cuda())
-                        input_indices.extend(near_sample_indices_single)"""
+                        input_indices.extend(near_sample_indices_single)
                     
                     batches_used += 1
                 
@@ -668,7 +715,7 @@ def main_function(experiment_directory, continue_from, batch_split):
             loss_log.append(outer_sum)
 
             optimizer_all.step()
-            torch.cuda.empty_cache()
+            torch.cuda.empty_cache()"""
             # zs = plot_xyz[:, 3]
             # zs = np.interp(zs, (zs.min(), zs.max()), (-1, +1))
             # zs += zs.mean()
@@ -722,7 +769,7 @@ def main_function(experiment_directory, continue_from, batch_split):
             exit(0)"""
 
         logging.info("Epoch took {} seconds".format(time.time() - start))            
-        logging.info("Epoch scene average loss: {}".format((scene_avg_loss / current_scene)))
+        #logging.info("Epoch scene average loss: {}".format((scene_avg_loss / current_scene)))
         
         end = time.time()
         seconds_elapsed = end - start
