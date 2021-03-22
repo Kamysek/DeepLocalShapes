@@ -93,18 +93,22 @@ def create_dict_and_index(samples):
    
 
 def add_cubes_to_samples(samples, voxel_size, grid_indices, radius):
-    for i in tqdm(samples):
-        # Extract xyz coordinates of current sample
-        x, y, z = i[0:3]
+    
+    temp_samples = np.zeros((samples.shape[0],32))
 
-        cube_indices = []
+    for index, element in enumerate(tqdm(samples)):
+        # Extract xyz coordinates of current sample
+        x, y, z = element[0:3]
+
+        cube_indices = np.zeros((27))
         # Determine x,y,z entry in matrix
         x_entry = int(np.floor((x+1) / voxel_size)) 
         y_entry = int(np.floor((y+1) / voxel_size))
         z_entry = int(np.floor((z+1)/ voxel_size))
-
         # Determine subcube index and get center point of subcube index
         N = 32
+        grid_index_zero = z_entry + N * (x_entry + N * y_entry)
+        counter = 0 
         for x_change in [-1, 0, 1]:
             for y_change in [-1, 0, 1]:
                 for z_change in [-1, 0, 1]:
@@ -113,18 +117,20 @@ def add_cubes_to_samples(samples, voxel_size, grid_indices, radius):
                     tmp_z = z_entry + z_change
                     
                     if min(tmp_x, tmp_y, tmp_z) >= 0 and max(tmp_x, tmp_y, tmp_z) < 32:
-                        tmp_grid_index = tmp_z + N * (tmp_y + N * tmp_x)
+                        tmp_grid_index = tmp_z + N * (tmp_x + N * tmp_y)
                         tmp_grid_xyz  = grid_indices[tmp_grid_index]
-                        if abs(tmp_grid_xyz[0]-x) < radius and abs(tmp_grid_xyz[1] - y) < radius and abs(tmp_grid_xyz[2] - z):
-                            cube_indices.append(tmp_grid_index)
-        i = np.concatenate((i, cube_indices), axis=0)
-    return samples
+                        if max(abs(tmp_grid_xyz[0]-x), abs(tmp_grid_xyz[1] - y), abs(tmp_grid_xyz[2] - z)) < radius:
+                            cube_indices[counter] = tmp_grid_index + 1
+                    counter += 1
+        temp_samples[index] = np.concatenate((element,[grid_index_zero], cube_indices))
+        
+    return temp_samples
 
 
 def determine_cubes_for_sample(filename, box_size, cube_size, radius=1.5):
     # Determine voxel_size
     voxel_size = 2 * box_size / cube_size    
-    
+
     # Load npz file
     npz = np.load(filename)
     pos = npz["pos"]
@@ -140,12 +146,40 @@ def determine_cubes_for_sample(filename, box_size, cube_size, radius=1.5):
     neg = add_cubes_to_samples(neg, voxel_size, grid_indices, radius)
                             
     # Store samples  back
-    npz["pos"] = pos
-    npz["neg"] = neg
-    np.savez(filename, npz)
+    filename = filename[:-4] + "_temp.npz"
+    np.savez(filename, pos=pos, neg=neg)
+
+
+def preprocess_sdf_data(samples, sdf_grid_indices):
+    temp_sdf_gts = []
+    temp_inputs = []
+    temp_input_grid_indices = []
+    for sample in samples:
+        grid_indices = sample[5:]
+        grid_indices = grid_indices[np.where(grid_indices>0)]
+        grid_indices -= 1
+        
+        for grid_index in grid_indices:
+            
+            temp_sdf_gts.append(torch.tanh(sample[3]))
+            
+            transformed_sample = sample[:3] - sdf_grid_indices[int(grid_index)] 
+            transformed_sample = transformed_sample.expand(1, 3)
+            transformed_sample.requires_grad = False
+
+            temp_inputs.extend(transformed_sample)
+
+            #code = temp_lat_vec((torch.empty(1).fill_(grid_index)).cuda().long())
+            
+            #temp_inputs.extend(torch.cat([code, transformed_sample.cuda()], dim=1).float().cuda().detach())
+            temp_input_grid_indices.append(grid_index)
+    temp_input_grid_indices = torch.stack(temp_input_grid_indices)
+    temp_inputs = torch.stack(temp_inputs) 
+    temp_sdf_gts = torch.stack(temp_sdf_gts)
+    return temp_input_grid_indices, temp_inputs, temp_sdf_gts
             
 
-def unpack_sdf_samples(filename, subsample=None):
+def unpack_sdf_samples(filename, subsample=None, grid_indices=None):
     npz = np.load(filename)
     if subsample is None:
         return npz
@@ -167,8 +201,9 @@ def unpack_sdf_samples(filename, subsample=None):
     samples = torch.cat([sample_pos, sample_neg], 0)
 
     # dict = new_func(samples, radius)
+    input_grid_indices, inputs, groundtruths = preprocess_sdf_data(samples, grid_indices)
 
-    return samples
+    return samples, input_grid_indices, inputs, groundtruths
 
 
 def generate_grid_center_indices(cube_size=32, box_size=1):
@@ -224,6 +259,8 @@ class SDFSamples(torch.utils.data.Dataset):
         self.data_source = data_source
         self.npyfiles = get_instance_filenames(data_source, split)
 
+        self.grid_indices = generate_grid_center_indices(cube_size=32, box_size=1)
+
         logging.debug(
             "using "
             + str(len(self.npyfiles))
@@ -239,9 +276,9 @@ class SDFSamples(torch.utils.data.Dataset):
                 filename = os.path.join(self.data_source, ws.sdf_samples_subdir, f)
                 npz = np.load(filename)
                 pos_tensor = remove_nans(torch.from_numpy(npz["pos"]).double())
-                pos_tensor = remove_tobig_tosmall(pos_tensor)
+                # pos_tensor = remove_tobig_tosmall(pos_tensor)
                 neg_tensor = remove_nans(torch.from_numpy(npz["neg"]).double())
-                neg_tensor = remove_tobig_tosmall(neg_tensor)
+                # neg_tensor = remove_tobig_tosmall(neg_tensor)
                 self.loaded_data.append(
                     [
                         pos_tensor[torch.randperm(pos_tensor.shape[0])],
@@ -262,4 +299,4 @@ class SDFSamples(torch.utils.data.Dataset):
                 idx,
             )
         else:
-            return unpack_sdf_samples(filename, self.subsample), idx
+            return unpack_sdf_samples(filename, self.subsample, self.grid_indices), idx

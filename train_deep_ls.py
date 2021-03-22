@@ -16,12 +16,12 @@ import time
 import deep_ls
 import deep_ls.workspace as ws
 import torch
-import torch.multiprocessing as mp
+import multiprocessing as mp
 import torch.utils.data as data_utils
 from scipy.spatial import cKDTree
 from Plot_3d import plot_3D
 import numpy as np
-
+import torch.nn.functional as F
 from tqdm import tqdm
 
 if not sys.warnoptions:
@@ -254,51 +254,52 @@ def append_parameter_magnitudes(param_mag_log, model):
         param_mag_log[name].append(param.data.norm().item())
 
 
-def trainer(center_point, sdf_tree, sdf_grid_radius, lat_vecs, sdf_data, indices, cube_size, outer_sum, outer_lock, decoder, loss_l1, do_code_regularization, code_reg_lambda, epoch):
-    inner_sum = 0.0
-    
-    # Get all indices of the samples that are within the L-radius around the cell center.
-    near_sample_indices = sdf_tree.query_ball_point(x=[center_point[1]], r=sdf_grid_radius, p=np.inf) 
-    
-    # Get number of samples located within the L-radius around the cell center
-    num_sdf_samples = len(near_sample_indices[0])
-    if num_sdf_samples < 1: 
-       return
-    
-    # Extract code from lat_vecs
-    code = lat_vecs((center_point[0] + indices[0].cuda() * (cube_size**3)))
+def trainer(sample, sdf_grid_indices, temp_lat_vec, outer_lock, sdf_gts, inputs, input_grid_indices):
+    temp_sdf_gts = []
+    temp_inputs = []
+    temp_input_grid_indices = []
 
-    # Get groundtruth sdf value
-    sdf_gt = sdf_data[near_sample_indices[0], 3].unsqueeze(1)
-    sdf_gt = torch.tanh(sdf_gt).cuda()
+    grid_indices = sample[5:]
+    grid_indices = grid_indices[np.where(grid_indices>0)]
+    grid_indices -= 1
     
-    transformed_sample = sdf_data[near_sample_indices[0], :3] - center_point[1]
-    transformed_sample.requires_grad = False
-    
-    code = code.expand(1, 125)
-    code = code.repeat(transformed_sample.shape[0], 1)
-    
-    decoder_input = torch.cat([code, transformed_sample.cuda()], dim=1).float()
-    
-    # Get network prediction of current sample
-    pred_sdf = decoder(decoder_input) 
-    
-    # f_theta - s_j
-    inner_sum = loss_l1(pred_sdf, sdf_gt) / num_sdf_samples
+    for grid_index in grid_indices:
+        
+        temp_sdf_gts.append(torch.tanh(sample[3]).cuda())
+        
+        transformed_sample = sample[:3] - sdf_grid_indices[int(grid_index)] 
+        transformed_sample = transformed_sample.expand(1, 3)
+        transformed_sample.requires_grad = False
 
-    # Right most part of formula (4) in DeepLS ->  + 1/sigma^2 L2(z_i)
-    if do_code_regularization and num_sdf_samples != 0:
-        l2_size_loss = torch.sum(torch.norm(code, dim=0))
-
-        reg_loss = (code_reg_lambda * min(1.0, epoch / 100) * l2_size_loss) / num_sdf_samples
-
-        inner_sum = inner_sum.cuda() + reg_loss.cuda()
-
-    inner_sum.backward()
+        code = temp_lat_vec((torch.empty(1).fill_(grid_index)).cuda().long())
+        
+        temp_inputs.extend(torch.cat([code, transformed_sample.cuda()], dim=1).float().cuda().detach())
+        temp_input_grid_indices.append(grid_index)
 
     with outer_lock:
-        outer_sum.value += inner_sum.item()
+        sdf_gts.append(temp_sdf_gts)
+        inputs.append(temp_inputs)
+        input_grid_indices.append(temp_input_grid_indices)
         return
+
+
+"""def custom_collate(batch):
+    max_size = max([b[0][1].shape[0] for b in batch])
+    batch_padded = []
+    for b in batch:
+        batch_padded_sub = []
+        pad_size = max_size - b[0][1].shape[0]
+        if pad_size == 0:
+            batch_padded_sub.extend(b[])
+            continue
+
+        #result = F.pad(input=source, pad=(0, 1, 1, 1), mode='constant', value=0)
+        
+        pad = torch.nn.ConstantPad1d((0, pad_size), 0.0)
+        for dim in range(1, 3):
+            b[0][dim] = pad(b[0][dim])
+        b[0].append(pad_size)
+    return batch"""
 
 def main_function(experiment_directory, continue_from, batch_split):
     logging.debug("running " + experiment_directory)
@@ -365,7 +366,7 @@ def main_function(experiment_directory, continue_from, batch_split):
 
     code_bound = get_spec_with_default(specs, "CodeBound", None)
     
-    cube_size = get_spec_with_default(specs, "CubeSize", 30)
+    cube_size = get_spec_with_default(specs, "CubeSize", 32)
     box_size = get_spec_with_default(specs, "BoxSize", 1)
     voxel_radius = get_spec_with_default(specs, "VoxelRadius", 1.5)
 
@@ -394,7 +395,8 @@ def main_function(experiment_directory, continue_from, batch_split):
         batch_size=scene_per_batch,
         shuffle=True,
         num_workers=num_data_loader_threads,
-        drop_last=True,
+        drop_last=True
+        #collate_fn=custom_collate
     )
 
     # Generate grid indices of cube
@@ -508,6 +510,8 @@ def main_function(experiment_directory, continue_from, batch_split):
         )
     )
 
+    max_size = 0
+
     for epoch in range(start_epoch, num_epochs + 1):
         
         start = time.time()
@@ -519,45 +523,55 @@ def main_function(experiment_directory, continue_from, batch_split):
         adjust_learning_rate(lr_schedules, optimizer_all, epoch)
 
         current_scene = 0
-        scene_avg_loss = 0.0
+        all_scenes_loss = 0.0
 
-        for sdf_data, indices in tqdm(sdf_loader):
+        for (sdf_data, input_grid_indices, inputs, groundtruths), indices in tqdm(sdf_loader):
+
+            #plot_xyz = sdf_data.clone().detach()
+            #plot_xyz = plot_xyz[:, :3].numpy()
+            #plot_xyz[:, 3] = 0.9
 
             # Get correct lat_vecs embedding and load to cuda
             temp_lat_vec = lat_vecs[indices]
-            temp_lat_vec.cuda()
             
             # Sdf_data contains n samples per scene
-            sdf_data = sdf_data.reshape(-1, 4)    
-            #sdf_data[:, 3] = ((sdf_data[:, 3]-sdf_data[:, 3].min()) / (sdf_data[:, 3].max()-sdf_data[:, 3].min()))*0.9
-            #gt = sdf_data[:, 3].cpu().detach().numpy()
-            #sdf_data[:, 3] = torch.from_numpy(np.interp(gt, (gt.min(), gt.max()), (-0.9, 0.9))).cuda()
-            sdf_data.requires_grad = False
-
-            # Amount of extracted sdf samples
-            num_sdf_samples_total = sdf_data.shape[0]
-
-            # Extract point coordinates of sdf value
-            xyz = sdf_data[:,:3]
-
-            #plot_xyz = sdf_data.clone().detach()
-            #plot_xyz = plot_xyz.numpy()
-            #plot_xyz[:, 3] = 0.9
-
-            # Build cKDTree to access the indices within a certain radious of a point in a very fast fashion
-            sdf_tree = cKDTree(xyz)
-
-            # Counter for debug purposes
-            total_batches_used = 0
-            samples_used = 0
-            empty_grid_cells = 0
-
-            # Calculate batch size
-            batch_size = int(len(sdf_grid_indices) / batch_split)
-
-            outer_sum = 0.0
+            #sdf_data = sdf_data.reshape(-1, 31).detach()
             optimizer_all.zero_grad()
+            codes = temp_lat_vec(input_grid_indices.long())
+            decoder_input = torch.cat([codes, inputs], dim=-1).float()
+            batch_loss = 0.0
+            decoder_input = torch.chunk(decoder_input, batch_split)
+            groundtruths = torch.chunk(groundtruths, batch_split)
+            for i in range(batch_split):
+                input_samples = decoder_input[i].squeeze()
+                pred = decoder(input_samples.cuda())
+                groundtruth = groundtruths[i].squeeze()
+                if groundtruth.shape[0] > max_size:
+                    max_size = groundtruth.shape[0]
+                chunk_loss = loss_l1(pred.squeeze(-1), groundtruth.cuda()) / groundtruth.shape[0]
+                chunk_loss.backward()
+                batch_loss += chunk_loss.item()
+            if do_code_regularization:
+                for grid_indx in range(len(sdf_grid_indices)):
+                    code = temp_lat_vec(torch.tensor(grid_indx).long())
+                    l2_size_loss = torch.sum(torch.norm(code, dim=0))
 
+                    reg_loss = (code_reg_lambda * min(1.0, epoch / 100) * l2_size_loss) / len(sdf_grid_indices)
+                    batch_loss += reg_loss.cuda()
+                
+            current_scene += 1
+            all_scenes_loss += batch_loss
+            loss_log.append(batch_loss)
+            optimizer_all.step()
+            torch.cuda.empty_cache()
+
+            """print("PLOTTING")
+            test = sdf_data.clone().numpy()
+            fig = plot_3D(test[:, 0:3], test[:, 3], epoch, [test[:, 3].min(), test[:, 3].max(), f'Plane_Epoch_All_{epoch}'], [ [ 0, 1, 0 ], [ 0.5, 1.4, -0.5 ] ], '/home/philippgfriedrich/DeepLocalShapes/plots/', flag_plot=True, flag_screenshot=True, row=1, col=1, scene=1)
+            exit(0)"""
+
+            """ 
+            # OLD CODE 
             for center_point_index in range(0, len(sdf_grid_indices), batch_size):
 
                 inner_sum = 0.0
@@ -597,8 +611,9 @@ def main_function(experiment_directory, continue_from, batch_split):
                     
                     inputs.extend(torch.cat([code, transformed_sample.cuda()], dim=1).float().cuda())
                     
+
                     ##
-                    """if len(near_sample_indices_single) > 0: 
+                    if len(near_sample_indices_single) > 0: 
 
                         sdf_gt_single = sdf_data[near_sample_indices_single, :] #.unsqueeze(1)
                         sdf_gt_single[:, 3] = torch.tanh(sdf_gt_single[:, 3]).cuda()
@@ -612,7 +627,7 @@ def main_function(experiment_directory, continue_from, batch_split):
                         code_single = code_single.repeat(transformed_sample_single.shape[0], 1)
                         
                         inputs_single.extend(torch.cat([code_single, transformed_sample_single.cuda()], dim=1).float().cuda())
-                        input_indices.extend(near_sample_indices_single)"""
+                        input_indices.extend(near_sample_indices_single)
                     
                     batches_used += 1
                 
@@ -668,12 +683,13 @@ def main_function(experiment_directory, continue_from, batch_split):
             loss_log.append(outer_sum)
 
             optimizer_all.step()
-            torch.cuda.empty_cache()
+            torch.cuda.empty_cache()"""
             # zs = plot_xyz[:, 3]
             # zs = np.interp(zs, (zs.min(), zs.max()), (-1, +1))
             # zs += zs.mean()
             # plot_xyz[:, 3] = zs
             # All points from training
+            
             """fig = plot_3D(plot_xyz[:, 0:3], plot_xyz[:, 3], epoch, [plot_xyz[:, 3].min(), plot_xyz[:, 3].max(), f'Plane_Epoch_All_{epoch}'], [ [ 0, 1, 0 ], [ 0.5, 1.4, -0.5 ] ], '/home/philippgfriedrich/DeepLocalShapes/plots/', flag_plot=True, flag_screenshot=True, row=1, col=2, scene=1)
 
             # # Only negative values 
@@ -708,9 +724,10 @@ def main_function(experiment_directory, continue_from, batch_split):
             fig = plot_3D(test[:, 0:3], test[:, 3], epoch, [test[:, 3].min(), test[:, 3].max(), f'Plane_Epoch_GT_Negative_{epoch}'], [ [ 0, 1, 0 ], [ 0.5, 1.4, -0.5 ] ], '/home/philippgfriedrich/DeepLocalShapes/plots/', fig=fig, flag_plot=True, flag_screenshot=True, row=2, col=1, scene=1)
 
             print("Plotting done.")
-            #exit(0)
+            exit(0)"""
             
-            test = "/home/philippgfriedrich/DeepLocalShapes/plots/mesh_1021a0914a7207aff927ed529ad90a11"
+            """
+            test = "/home/philippgfriedrich/DeepLocalShapes/plots/mesh_itermediate_test"
 
             logging.info("SAVING INTERMEDIATE RESULTS to: {}".format(test))
             start = time.time()
@@ -718,15 +735,14 @@ def main_function(experiment_directory, continue_from, batch_split):
                 deep_ls.mesh.create_mesh(
                     decoder, temp_lat_vec.weight.data, cube_size, box_size, test, N=128, max_batch=int(2 ** 18)
                 )
-            logging.info("Saving tookl time: {}".format(time.time() - start))
+            logging.info("Saving took time: {}".format(time.time() - start))
             exit(0)"""
-
-        logging.info("Epoch took {} seconds".format(time.time() - start))            
-        logging.info("Epoch scene average loss: {}".format((scene_avg_loss / current_scene)))
         
         end = time.time()
         seconds_elapsed = end - start
         timing_log.append(seconds_elapsed)
+        avg_loss = all_scenes_loss / current_scene
+        logging.info("Avg Loss: {}, Epoch took {} seconds, Max Size: {}".format(avg_loss, seconds_elapsed, max_size))      
 
         lr_log.append([schedule.get_learning_rate(epoch) for schedule in lr_schedules])
 
