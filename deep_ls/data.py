@@ -79,37 +79,38 @@ def preprocess_samples(samples, grid_indices, radius=0.0625):
     xyz = samples[:,:3]
     sdf_tree = cKDTree(xyz)
     max_size = 300000
+    with torch.no_grad():
+        for center_point_index in range(0, len(grid_indices), batch_size):
+            index = center_point_index
 
-    for center_point_index in range(0, len(grid_indices), batch_size):
-        index = center_point_index
+            # Get all indices of the samples that are within the L-radius around the cell center.
+            near_sample_indices = sdf_tree.query_ball_point(x=[grid_indices[index]], r=radius, p=np.inf, return_sorted=True)
+            # Get number of samples located samples within the L-radius around the cell center
+            near_sample_indices = near_sample_indices[0]
+            #near_sample_indices_single = near_sample_indices_single[0]
+            if len(near_sample_indices) < 1: 
+                continue
+            sdf_gt = samples[near_sample_indices, 3]
+            
+            temp_sdf_gts.extend(torch.tanh(sdf_gt))
 
-        # Get all indices of the samples that are within the L-radius around the cell center.
-        near_sample_indices = sdf_tree.query_ball_point(x=[grid_indices[index]], r=radius, p=np.inf, return_sorted=True)
-        # Get number of samples located samples within the L-radius around the cell center
-        near_sample_indices = near_sample_indices[0]
-        #near_sample_indices_single = near_sample_indices_single[0]
-        if len(near_sample_indices) < 1: 
-            continue
-        sdf_gt = samples[near_sample_indices, 3]
-        
-        temp_sdf_gts.extend(torch.tanh(sdf_gt))
-
-        transformed_samples = samples[near_sample_indices, :3] - grid_indices[index] 
-        #transformed_samples = transformed_samples.expand((near_sample_indices, 3))
-        temp_inputs.extend(transformed_samples)
-        center_index = np.repeat(center_point_index, len(near_sample_indices))
-        temp_input_grid_indices.extend(torch.from_numpy(center_index))
-    padding = max_size - len(temp_input_grid_indices)
-    temp_input_grid_indices = torch.stack(temp_input_grid_indices)
-    zeros_input_grid_indices = torch.zeros_like(temp_input_grid_indices[0])
-    temp_input_grid_indices = torch.cat([temp_input_grid_indices, zeros_input_grid_indices.repeat(padding)])
-    temp_inputs = torch.stack(temp_inputs) 
-    zeros_inputs = torch.zeros_like(temp_inputs[0, :]).expand(1, 3)
-    temp_inputs = torch.cat([temp_inputs, zeros_inputs.repeat(padding, 1)])
-    temp_sdf_gts = torch.stack(temp_sdf_gts)
-    zeros_gt = torch.zeros_like(temp_sdf_gts[0])
-    temp_sdf_gts = torch.cat([temp_sdf_gts, zeros_gt.repeat(padding)])
-    return temp_input_grid_indices, temp_inputs, temp_sdf_gts, padding
+            transformed_samples = samples[near_sample_indices, :3] - grid_indices[index] 
+            #transformed_samples = transformed_samples.expand((near_sample_indices, 3))
+            temp_inputs.extend(transformed_samples)
+            center_index = np.repeat(center_point_index, len(near_sample_indices))
+            temp_input_grid_indices.extend(torch.from_numpy(center_index))
+        del sdf_tree
+        padding = max_size - len(temp_input_grid_indices)
+        temp_input_grid_indices = torch.stack(temp_input_grid_indices)
+        zeros_input_grid_indices = torch.zeros_like(temp_input_grid_indices[0])
+        temp_input_grid_indices = torch.cat([temp_input_grid_indices, zeros_input_grid_indices.repeat(padding)])
+        temp_inputs = torch.stack(temp_inputs) 
+        zeros_inputs = torch.zeros_like(temp_inputs[0, :]).expand(1, 3)
+        temp_inputs = torch.cat([temp_inputs, zeros_inputs.repeat(padding, 1)])
+        temp_sdf_gts = torch.stack(temp_sdf_gts)
+        zeros_gt = torch.zeros_like(temp_sdf_gts[0])
+        temp_sdf_gts = torch.cat([temp_sdf_gts, zeros_gt.repeat(padding)])
+        return temp_input_grid_indices, temp_inputs, temp_sdf_gts, padding
 
 
 def unpack_sdf_samples(filename, subsample=None, grid_indices=None):
@@ -129,6 +130,7 @@ def unpack_sdf_samples(filename, subsample=None, grid_indices=None):
     sample_neg = torch.index_select(neg_tensor, 0, random_neg)
 
     samples = torch.cat([sample_pos, sample_neg], 0)
+    grid_indices = generate_grid_center_indices(cube_size=32, box_size=1)
 
     input_grid_indices, inputs, groundtruths, padding = preprocess_samples(samples, grid_indices)
 
@@ -186,8 +188,6 @@ class SDFSamples(torch.utils.data.Dataset):
         self.data_source = data_source
         self.npyfiles = get_instance_filenames(data_source, split)
 
-        self.grid_indices = generate_grid_center_indices(cube_size=32, box_size=1)
-
         logging.debug(
             "using "
             + str(len(self.npyfiles))
@@ -224,4 +224,4 @@ class SDFSamples(torch.utils.data.Dataset):
                 idx,
             )
         else:
-            return unpack_sdf_samples(filename, self.subsample, self.grid_indices), idx
+            return unpack_sdf_samples(filename, self.subsample), idx

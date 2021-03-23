@@ -22,7 +22,9 @@ from scipy.spatial import cKDTree
 from Plot_3d import plot_3D
 import numpy as np
 
+import gc
 from tqdm import tqdm
+
 
 if not sys.warnoptions:
     warnings.simplefilter("ignore")
@@ -395,6 +397,7 @@ def main_function(experiment_directory, continue_from, batch_split):
         shuffle=True,
         num_workers=num_data_loader_threads,
         drop_last=True,
+        pin_memory=True
     )
 
     # Generate grid indices of cube
@@ -523,12 +526,9 @@ def main_function(experiment_directory, continue_from, batch_split):
         max_size = 0
 
         for (sdf_data, input_grid_indices, inputs, groundtruths, padding), indices in tqdm(sdf_loader):
-            # Get correct lat_vecs embedding and load to cuda
-            
             # Sdf_data contains n samples per scene
             #sdf_data = sdf_data.reshape(-1, 31).detach()
             optimizer_all.zero_grad()
-            
             batch_loss = 0.0
             for i in range(len(indices)):
                 temp_lat_vec = lat_vecs[indices[i]]
@@ -541,19 +541,25 @@ def main_function(experiment_directory, continue_from, batch_split):
                     max_size = groundtruth.shape[0]
                 chunk_loss = loss_l1(pred.squeeze(-1), groundtruth.cuda()) / groundtruth.shape[0]
                 chunk_loss.backward()
-                batch_loss += chunk_loss.item()
-            if do_code_regularization:
-                for grid_indx in range(len(sdf_grid_indices)):
-                    code = temp_lat_vec(torch.tensor(grid_indx).long())
-                    l2_size_loss = torch.sum(torch.norm(code, dim=0))
+                batch_loss += chunk_loss.item() / len(indices)
+                if do_code_regularization:
+                    for grid_indx in range(len(sdf_grid_indices)):
+                        code = temp_lat_vec(torch.tensor(grid_indx).long())
+                        l2_size_loss = torch.sum(torch.norm(code.cuda(), dim=0))
 
-                    reg_loss = (code_reg_lambda * min(1.0, epoch / 100) * l2_size_loss) / len(sdf_grid_indices)
-                    batch_loss += reg_loss.cuda()
-                
-            current_scene += 1
-            all_scenes_loss += batch_loss
+                        reg_loss = (code_reg_lambda * min(1.0, epoch / 100) * l2_size_loss) / len(sdf_grid_indices)
+                        batch_loss += reg_loss.cuda()
+            batch_loss = batch_loss.detach()
             loss_log.append(batch_loss)
+            all_scenes_loss += batch_loss
+            current_scene += 1
             optimizer_all.step()
+            del input_grid_indices
+            del inputs
+            del groundtruths
+            del padding
+            del indices
+            gc.collect()
             torch.cuda.empty_cache()
             # zs = plot_xyz[:, 3]
             # zs = np.interp(zs, (zs.min(), zs.max()), (-1, +1))
@@ -610,7 +616,7 @@ def main_function(experiment_directory, continue_from, batch_split):
         end = time.time()
         seconds_elapsed = end - start
         timing_log.append(seconds_elapsed)
-        avg_loss = all_scenes_loss / current_scene
+        avg_loss = all_scenes_loss / len(sdf_loader)
         logging.info("Avg Loss: {}, Epoch took {} seconds.".format(avg_loss, seconds_elapsed))  
         logging.debug("Max size {}".format(max_size))    
 
