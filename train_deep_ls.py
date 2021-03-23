@@ -519,154 +519,40 @@ def main_function(experiment_directory, continue_from, batch_split):
         adjust_learning_rate(lr_schedules, optimizer_all, epoch)
 
         current_scene = 0
-        scene_avg_loss = 0.0
+        all_scenes_loss = 0.0
+        max_size = 0
 
-        for sdf_data, indices in tqdm(sdf_loader):
-
+        for (sdf_data, input_grid_indices, inputs, groundtruths, padding), indices in tqdm(sdf_loader):
             # Get correct lat_vecs embedding and load to cuda
-            temp_lat_vec = lat_vecs[indices]
-            temp_lat_vec.cuda()
             
             # Sdf_data contains n samples per scene
-            sdf_data = sdf_data.reshape(-1, 4)    
-            #sdf_data[:, 3] = ((sdf_data[:, 3]-sdf_data[:, 3].min()) / (sdf_data[:, 3].max()-sdf_data[:, 3].min()))*0.9
-            #gt = sdf_data[:, 3].cpu().detach().numpy()
-            #sdf_data[:, 3] = torch.from_numpy(np.interp(gt, (gt.min(), gt.max()), (-0.9, 0.9))).cuda()
-            sdf_data.requires_grad = False
-
-            # Amount of extracted sdf samples
-            num_sdf_samples_total = sdf_data.shape[0]
-
-            # Extract point coordinates of sdf value
-            xyz = sdf_data[:,:3]
-
-            #plot_xyz = sdf_data.clone().detach()
-            #plot_xyz = plot_xyz.numpy()
-            #plot_xyz[:, 3] = 0.9
-
-            # Build cKDTree to access the indices within a certain radious of a point in a very fast fashion
-            sdf_tree = cKDTree(xyz)
-
-            # Counter for debug purposes
-            total_batches_used = 0
-            samples_used = 0
-            empty_grid_cells = 0
-
-            # Calculate batch size
-            batch_size = int(len(sdf_grid_indices) / batch_split)
-
-            outer_sum = 0.0
+            #sdf_data = sdf_data.reshape(-1, 31).detach()
             optimizer_all.zero_grad()
+            
+            batch_loss = 0.0
+            for i in range(len(indices)):
+                temp_lat_vec = lat_vecs[indices[i]]
+                codes = temp_lat_vec(input_grid_indices[i, :-padding[i]].long())
+                decoder_input = torch.cat([codes, inputs[i, :-padding[i], :]], dim=-1).float()
+                input_samples = decoder_input.squeeze()
+                pred = decoder(input_samples.cuda())
+                groundtruth = groundtruths[i, :].squeeze()[:-padding[i]]
+                if groundtruth.shape[0] > max_size:
+                    max_size = groundtruth.shape[0]
+                chunk_loss = loss_l1(pred.squeeze(-1), groundtruth.cuda()) / groundtruth.shape[0]
+                chunk_loss.backward()
+                batch_loss += chunk_loss.item()
+            if do_code_regularization:
+                for grid_indx in range(len(sdf_grid_indices)):
+                    code = temp_lat_vec(torch.tensor(grid_indx).long())
+                    l2_size_loss = torch.sum(torch.norm(code, dim=0))
 
-            for center_point_index in range(0, len(sdf_grid_indices), batch_size):
-
-                inner_sum = 0.0
-                inputs = []
-                #inputs_single = []
-                sdf_gts = []
-                #sdf_gts_single = []
-                batches_used = 0
-                #input_indices = []
-
-                for batch in range(batch_size):
-                    # Calculate index in temporary embedding 
-                    index = center_point_index + batch
-
-                    # Get all indices of the samples that are within the L-radius around the cell center.
-                    near_sample_indices = sdf_tree.query_ball_point(x=[sdf_grid_indices[index]], r=sdf_grid_radius, p=np.inf, return_sorted=True)
-                    #near_sample_indices_single = sdf_tree.query_ball_point(x=[sdf_grid_indices[index]], r=(sdf_grid_radius / 1.5 / 2), p=np.inf, return_sorted=True)
-
-                    # Get number of samples located samples within the L-radius around the cell center
-                    near_sample_indices = near_sample_indices[0]
-                    #near_sample_indices_single = near_sample_indices_single[0]
-                    if len(near_sample_indices) < 1: 
-                        continue
-                    
-                    samples_used += len(near_sample_indices)
-                    
-                    sdf_gt = sdf_data[near_sample_indices, 3] #.unsqueeze(1)
-                    
-                    sdf_gts.extend(torch.tanh(sdf_gt).cuda())
-
-                    transformed_sample = sdf_data[near_sample_indices, :3] - sdf_grid_indices[index] 
-                    transformed_sample.requires_grad = False
-                    
-                    code = temp_lat_vec((torch.empty(1).fill_(index)).cuda().long())
-                    code = code.expand(1, 125)
-                    code = code.repeat(transformed_sample.shape[0], 1)
-                    
-                    inputs.extend(torch.cat([code, transformed_sample.cuda()], dim=1).float().cuda())
-                    
-                    ##
-                    """if len(near_sample_indices_single) > 0: 
-
-                        sdf_gt_single = sdf_data[near_sample_indices_single, :] #.unsqueeze(1)
-                        sdf_gt_single[:, 3] = torch.tanh(sdf_gt_single[:, 3]).cuda()
-                        sdf_gts_single.extend(sdf_gt_single)
-
-                        transformed_sample_single = sdf_data[near_sample_indices_single, :3] - sdf_grid_indices[index] 
-                        transformed_sample_single.requires_grad = False
-                        
-                        code_single = temp_lat_vec((torch.empty(1).fill_(index)).cuda().long())
-                        code_single = code_single.expand(1, 125)
-                        code_single = code_single.repeat(transformed_sample_single.shape[0], 1)
-                        
-                        inputs_single.extend(torch.cat([code_single, transformed_sample_single.cuda()], dim=1).float().cuda())
-                        input_indices.extend(near_sample_indices_single)"""
-                    
-                    batches_used += 1
+                    reg_loss = (code_reg_lambda * min(1.0, epoch / 100) * l2_size_loss) / len(sdf_grid_indices)
+                    batch_loss += reg_loss.cuda()
                 
-                # Get network prediction of current sample
-                if len(inputs) < 1:
-                    empty_grid_cells += 1
-                    continue
-
-                total_batches_used += batches_used
-
-                decoder_input = torch.stack(inputs).cuda()
-
-                pred_sdf = decoder(decoder_input).squeeze()
-
-                # f_theta - s_j
-                sdf_gt = torch.stack(sdf_gts)
-
-
-                ##
-                #decoder_input_single = torch.stack(inputs_single).cuda()
-
-                #pred_sdf_single = decoder(decoder_input_single).squeeze()
-
-                #sdf_gt_single = torch.stack(sdf_gts_single)
-
-                if (np.sign(pred_sdf.detach().cpu()) == np.sign(sdf_gt.detach().cpu())).all():
-                     logging.info("WRONG PREDICTION")
-
-                inner_sum = loss_l1(pred_sdf.squeeze(0), sdf_gt.cuda()) / decoder_input.shape[0]
-                
-                #plot_xyz[input_indices, 3] = np.reshape(pred_sdf_single.cpu().data.numpy(), -1)
-
-                # Right most part of formula (4) in DeepLS ->  + 1/sigma^2 L2(z_i)
-                if do_code_regularization and num_sdf_samples_total != 0:
-                    l2_size_loss = torch.sum(torch.norm(code, dim=0)).cuda()
-
-                    reg_loss = (code_reg_lambda * min(1.0, epoch / 100) * l2_size_loss) / decoder_input.shape[0]
-
-                    inner_sum = inner_sum + reg_loss.cuda()
-
-                inner_sum.backward()
-
-                outer_sum += inner_sum.item()
-
-            scene_avg_loss += outer_sum
-
             current_scene += 1
-
-            #logging.info("Scene {}, Scence Index {}, loss = {}".format(current_scene, indices.item(), outer_sum))
-            #logging.info("Total batches used {} total samples {}".format(total_batches_used, samples_used))
-            #logging.info("Empty grid cells {}".format(empty_grid_cells))
-
-            loss_log.append(outer_sum)
-
+            all_scenes_loss += batch_loss
+            loss_log.append(batch_loss)
             optimizer_all.step()
             torch.cuda.empty_cache()
             # zs = plot_xyz[:, 3]
@@ -721,12 +607,13 @@ def main_function(experiment_directory, continue_from, batch_split):
             logging.info("Saving tookl time: {}".format(time.time() - start))
             exit(0)"""
 
-        logging.info("Epoch took {} seconds".format(time.time() - start))            
-        logging.info("Epoch scene average loss: {}".format((scene_avg_loss / current_scene)))
-        
         end = time.time()
         seconds_elapsed = end - start
         timing_log.append(seconds_elapsed)
+        avg_loss = all_scenes_loss / current_scene
+        logging.info("Avg Loss: {}, Epoch took {} seconds.".format(avg_loss, seconds_elapsed))  
+        logging.debug("Max size {}".format(max_size))    
+
 
         lr_log.append([schedule.get_learning_rate(epoch) for schedule in lr_schedules])
 
