@@ -530,26 +530,36 @@ def main_function(experiment_directory, continue_from, batch_split):
             #sdf_data = sdf_data.reshape(-1, 31).detach()
             optimizer_all.zero_grad()
             batch_loss = 0.0
+            reg_loss = 0.0
+            input_tensor = torch.Tensor()
+            groundtruth_tensor = torch.Tensor()
             for i in range(len(indices)):
                 temp_lat_vec = lat_vecs[indices[i]]
                 codes = temp_lat_vec(input_grid_indices[i, :-padding[i]].long())
                 decoder_input = torch.cat([codes, inputs[i, :-padding[i], :]], dim=-1).float()
                 input_samples = decoder_input.squeeze()
-                pred = decoder(input_samples.cuda())
+                input_tensor = torch.cat([input_tensor, input_samples])
+                #pred = decoder(input_samples.cuda())
                 groundtruth = groundtruths[i, :].squeeze()[:-padding[i]]
+                groundtruth_tensor = torch.cat([groundtruth_tensor, groundtruth])
                 if groundtruth.shape[0] > max_size:
                     max_size = groundtruth.shape[0]
-                chunk_loss = loss_l1(pred.squeeze(-1), groundtruth.cuda()) / groundtruth.shape[0]
-                chunk_loss.backward()
-                batch_loss += chunk_loss.item() / len(indices)
-                if do_code_regularization:
+                #chunk_loss = loss_l1(pred.squeeze(-1), groundtruth.cuda()) / groundtruth.shape[0]
+                #chunk_loss.backward()
+                #batch_loss += chunk_loss.item() / len(indices)
+                """if do_code_regularization:
                     for grid_indx in range(len(sdf_grid_indices)):
                         code = temp_lat_vec(torch.tensor(grid_indx).long())
                         l2_size_loss = torch.sum(torch.norm(code.cuda(), dim=0))
 
-                        reg_loss = (code_reg_lambda * min(1.0, epoch / 100) * l2_size_loss) / len(sdf_grid_indices)
-                        batch_loss += reg_loss.cuda()
-            batch_loss = batch_loss.detach()
+                        reg_loss += (code_reg_lambda * min(1.0, epoch / 100) * l2_size_loss) / len(sdf_grid_indices)
+                        #batch_loss += reg_loss.cuda()"""
+            pred = decoder(input_tensor.cuda())
+            chunk_loss = loss_l1(pred.squeeze(-1), groundtruth_tensor.cuda()) / groundtruth_tensor.shape[0]
+            #chunk_loss += reg_loss.cuda()
+            chunk_loss.cuda().backward()
+            batch_loss += chunk_loss.item()
+            #batch_loss = batch_loss.detach()
             loss_log.append(batch_loss)
             all_scenes_loss += batch_loss
             current_scene += 1
