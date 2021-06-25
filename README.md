@@ -1,3 +1,5 @@
+This project is a work in progress. 
+
 Based on: https://github.com/facebookresearch/DeepSDF using MIT LICENSE (https://github.com/facebookresearch/DeepSDF/blob/master/LICENSE)
 Copyright 2021-present Philipp Friedrich, Josef Kamysek. All Rights Reserved.
 
